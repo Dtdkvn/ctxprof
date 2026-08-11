@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ctxprof.dev/schema/config-v1.json",
+  "title": "Ctxprof context budget configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "input": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "baseline": {
+      "type": "string"
+    },
+    "limits": {
+      "$ref": "#/$defs/limits"
+    },
+    "regressions": {
+      "$ref": "#/$defs/regressions"
+    }
+  },
+  "$defs": {
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "totalTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "estimatedCostUsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "warnings": {
+          "type": "number",
+          "minimum": 0
+        },
+        "components": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "system": {
+              "type": "number",
+              "minimum": 0
+            },
+            "developer": {
+              "type": "number",
+              "minimum": 0
+            },
+            "tools": {
+              "type": "number",
+              "minimum": 0
+            },
+            "message": {
+              "type": "number",
+              "minimum": 0
+            },
+            "tool_result": {
+              "type": "number",
+              "minimum": 0
+            },
+            "other": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "regressions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokensPercent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "totalTokensPercent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "estimatedCostPercent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "componentPercent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "warningsIncrease": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

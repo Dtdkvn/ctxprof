@@ -1,0 +1,84 @@
+# Context budgets in CI
+
+A context budget catches accidental prompt growth before it compounds across requests. It is intentionally separate from output-quality evaluation: run both.
+
+## 1. Create representative inputs
+
+Commit synthetic or approved sanitized JSON under an `evals/` directory. Each file may contain a raw request, a `{ request, response }` wrapper, JSONL cases, or a sanitized HAR. Provider usage in a fixture becomes the displayed total; component breakdowns remain deterministic estimates.
+
+Keep case filenames stable. Baselines match cases by filename (and `#N` suffix for multi-record files).
+
+## 2. Configure limits
+
+Copy the root [ctxprof.config.json](../ctxprof.config.json) and adjust:
+
+- `limits` are hard ceilings independent of history;
+- `regressions` compare each current case with the committed baseline;
+- `components` use `system`, `developer`, `tools`, `message`, `tool_result`, and `other`;
+- a configured cost check fails when pricing is unknown.
+
+Paths in the config are resolved relative to the config file. The JSON Schema at [ctxprof-config.schema.json](ctxprof-config.schema.json) enables editor validation.
+
+## 3. Establish the baseline
+
+```bash
+npx ctxprof check --update-baseline
+git add ctxprof.config.json .ctxprof-baseline.json
+git commit -m "test: establish context budget"
+```
+
+Review baseline changes like lockfile or bundle-size changes. Updating a baseline should be an explicit decision, not the automatic response to a failing pull request. When regression rules are enabled, both newly added current cases and removed baseline cases fail until that case-set change is acknowledged with an update.
+
+## 4. Run the gate
+
+```bash
+npx ctxprof check
+```
+
+Exit code `0` means every case passed. Exit code `1` means at least one hard limit, regression limit, missing case, or required price check failed. `--json` returns structured metrics and violations.
+
+For GitHub-hosted workflows, use the composite action in [examples/github-actions/context-budget.yml](../examples/github-actions/context-budget.yml). `--github` emits `::error` annotations if you invoke the CLI directly.
+
+## Useful policies
+
+### Tight stable prompt
+
+```json
+{
+  "regressions": {
+    "inputTokensPercent": 0,
+    "componentPercent": 0,
+    "warningsIncrease": 0
+  }
+}
+```
+
+### Early product with headroom
+
+```json
+{
+  "limits": {
+    "inputTokens": 12000,
+    "components": {
+      "tools": 5000,
+      "tool_result": 4000
+    }
+  },
+  "regressions": {
+    "inputTokensPercent": 10,
+    "componentPercent": 20
+  }
+}
+```
+
+### Cost-sensitive high volume
+
+Use an exact pricing catalog checked against your provider contract, then set both cost and token limits. Token checks remain valuable because negotiated prices can change independently from context quality.
+
+## Troubleshooting
+
+- **A case disappeared:** keep the old fixture or intentionally regenerate the baseline after review. Missing baseline cases fail to prevent silent coverage loss.
+- **A case was added:** inspect its absolute metrics, then regenerate the baseline. Regression mode requires every current case to have an explicit reference.
+- **Cost is unknown:** add the exact model ID to a pricing catalog; do not rename it to a “similar” built-in model.
+- **Provider total is stable but a component regressed:** this is expected and useful. Another component may have shrunk enough to hide the growth in the total.
+- **Small estimate drift after upgrading Ctxprof:** review the release notes. Estimator changes are schema/behavior changes and should be called out.

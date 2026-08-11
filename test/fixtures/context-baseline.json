@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-11T15:29:32.861Z",
+  "cases": {
+    "chat-baseline.json": {
+      "inputTokens": 220,
+      "totalTokens": 250,
+      "estimatedCostUsd": 0.001,
+      "components": {
+        "system": 59,
+        "developer": 0,
+        "tools": 139,
+        "message": 22,
+        "tool_result": 0,
+        "other": 0
+      },
+      "warnings": 0
+    },
+    "responses.json": {
+      "inputTokens": 160,
+      "totalTokens": 184,
+      "estimatedCostUsd": 0.000304,
+      "components": {
+        "system": 30,
+        "developer": 0,
+        "tools": 0,
+        "message": 30,
+        "tool_result": 0,
+        "other": 100
+      },
+      "warnings": 0
+    }
+  }
+}

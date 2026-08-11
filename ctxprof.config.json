@@ -1,0 +1,26 @@
+{
+  "$schema": "./docs/ctxprof-config.schema.json",
+  "input": [
+    "test/fixtures/chat-baseline.json",
+    "test/fixtures/responses.json"
+  ],
+  "baseline": "test/fixtures/context-baseline.json",
+  "limits": {
+    "inputTokens": 600,
+    "totalTokens": 750,
+    "estimatedCostUsd": 0.01,
+    "warnings": 2,
+    "components": {
+      "system": 250,
+      "tools": 350,
+      "tool_result": 250
+    }
+  },
+  "regressions": {
+    "inputTokensPercent": 5,
+    "totalTokensPercent": 5,
+    "estimatedCostPercent": 8,
+    "componentPercent": 10,
+    "warningsIncrease": 0
+  }
+}

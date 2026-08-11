@@ -1,0 +1,34 @@
+name: Ctxprof context budget
+description: Fail a workflow when LLM context tokens, cost, warnings, or components regress.
+author: Ctxprof contributors
+branding:
+  icon: pie-chart
+  color: purple
+inputs:
+  config:
+    description: Path to ctxprof.config.json in the calling repository.
+    required: false
+    default: ctxprof.config.json
+  pricing:
+    description: Optional exact provider/model pricing catalog.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Build Ctxprof action
+      shell: bash
+      run: |
+        npm ci --ignore-scripts --no-audit --no-fund --prefix "$GITHUB_ACTION_PATH"
+        npm run build --prefix "$GITHUB_ACTION_PATH"
+    - name: Check context budget
+      shell: bash
+      env:
+        CTXPROF_ACTION_CONFIG: ${{ inputs.config }}
+        CTXPROF_ACTION_PRICING: ${{ inputs.pricing }}
+      run: |
+        args=(check --config "$CTXPROF_ACTION_CONFIG" --github)
+        if [[ -n "$CTXPROF_ACTION_PRICING" ]]; then
+          args+=(--pricing "$CTXPROF_ACTION_PRICING")
+        fi
+        node "$GITHUB_ACTION_PATH/dist/cli.js" "${args[@]}"

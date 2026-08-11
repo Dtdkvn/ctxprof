@@ -1,0 +1,56 @@
+{
+  "name": "ctxprof",
+  "version": "0.1.0",
+  "description": "A local-first context-window profiler and CI budget gate for OpenAI-compatible LLM apps.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "ctxprof": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "docs/ctxprof-config.schema.json",
+    "ctxprof.pricing.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "node scripts/lint.mjs",
+    "test": "npm run build:test && node --test .test-dist/test",
+    "build:test": "tsc -p tsconfig.test.json",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "dev": "node --enable-source-maps --import=tsx src/cli.ts",
+    "demo": "npm run build && node dist/cli.js demo",
+    "smoke": "npm run build && node scripts/smoke.mjs",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "llm",
+    "openai",
+    "prompt",
+    "tokens",
+    "profiler",
+    "context-window",
+    "ai-observability",
+    "github-action"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

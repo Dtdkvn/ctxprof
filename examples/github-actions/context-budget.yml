@@ -1,0 +1,22 @@
+name: Context budget
+
+on:
+  pull_request:
+    paths:
+      - "prompts/**"
+      - "evals/**"
+      - "ctxprof.config.json"
+      - ".ctxprof-baseline.json"
+
+permissions:
+  contents: read
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Replace the owner and pin a released major tag after publishing.
+      - uses: your-github-owner/ctxprof@v1
+        with:
+          config: ctxprof.config.json

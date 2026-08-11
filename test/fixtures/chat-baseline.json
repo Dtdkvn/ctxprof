@@ -1,0 +1,67 @@
+{
+  "captured_at": "2026-08-11T10:00:00.000Z",
+  "prompt_version": "support-v1",
+  "label": "Support lookup baseline",
+  "endpoint": "/v1/chat/completions",
+  "status": 200,
+  "duration_ms": 420,
+  "request": {
+    "model": "gpt-5.6-terra",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a concise support agent. Use tools for order facts and never invent private data."
+      },
+      {
+        "role": "user",
+        "content": "Where is order demo-42?"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "find_order",
+          "description": "Find one order by its public reference.",
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "order_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "order_id"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "response": {
+    "model": "gpt-5.6-terra",
+    "choices": [
+      {
+        "message": {
+          "role": "assistant",
+          "content": "I found the order and it is scheduled for tomorrow.",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "find_order",
+                "arguments": "{\"order_id\":\"demo-42\"}"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 220,
+      "completion_tokens": 30,
+      "total_tokens": 250
+    }
+  }
+}

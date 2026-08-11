@@ -1,0 +1,67 @@
+{
+  "captured_at": "2026-08-11T11:00:00.000Z",
+  "prompt_version": "extract-v1",
+  "label": "Invoice extractor",
+  "endpoint": "/v1/responses",
+  "request": {
+    "model": "gpt-5.6-luna",
+    "instructions": "Extract invoice number, date, and total. Return only valid JSON.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Invoice AC-104 dated 2026-08-01 has a total of USD 42.50."
+          }
+        ]
+      }
+    ],
+    "text": {
+      "format": {
+        "type": "json_schema",
+        "name": "invoice",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "invoice_number": {
+              "type": "string"
+            },
+            "date": {
+              "type": "string"
+            },
+            "total": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "invoice_number",
+            "date",
+            "total"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "response": {
+    "model": "gpt-5.6-luna",
+    "output": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "{\"invoice_number\":\"AC-104\",\"date\":\"2026-08-01\",\"total\":42.5}"
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 160,
+      "output_tokens": 24,
+      "total_tokens": 184
+    }
+  }
+}

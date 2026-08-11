@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title">
+  <title id="title">Ctxprof</title>
+  <defs>
+    <linearGradient id="g" x1="12" y1="10" x2="82" y2="88" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#6d28d9"/>
+    </linearGradient>
+    <filter id="s" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#6d28d9" flood-opacity=".32"/>
+    </filter>
+  </defs>
+  <rect x="8" y="8" width="80" height="80" rx="22" fill="url(#g)" filter="url(#s)"/>
+  <path d="M28 68V43M42 68V28M56 68V50M70 68V22" fill="none" stroke="white" stroke-width="7" stroke-linecap="round"/>
+</svg>

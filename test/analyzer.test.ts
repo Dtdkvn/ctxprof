@@ -1,0 +1,80 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { analyzeExchange } from "../src/analyzer.js";
+
+test("attributes chat context and allocates provider totals", () => {
+  const run = analyzeExchange(
+    {
+      model: "gpt-5.6-terra",
+      api_key: "sk-this-must-never-be-saved",
+      messages: [
+        { role: "system", content: "Keep answers short." },
+        { role: "user", content: "Use Bearer secret-value-123456789 to say hello." },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "lookup",
+            description: "Look up a value.",
+            parameters: { type: "object", properties: { id: { type: "string" } } },
+          },
+        },
+      ],
+    },
+    {
+      choices: [{ message: { tool_calls: [{ function: { name: "lookup", arguments: "{}" } }] } }],
+      usage: { prompt_tokens: 100, completion_tokens: 12 },
+    },
+  );
+  assert.equal(run.totals.providerInputTokens, 100);
+  assert.equal(run.totals.outputTokens, 12);
+  assert.equal(run.components.reduce((sum, component) => sum + component.allocatedInputTokens, 0), 100);
+  assert.deepEqual(new Set(run.components.map((component) => component.kind)), new Set(["system", "message", "tools"]));
+  assert.ok(run.totals.estimatedTotalCostUsd !== null);
+  assert.equal((run.exchange.request as Record<string, unknown>).api_key, "[REDACTED]");
+  assert.doesNotMatch(JSON.stringify(run.exchange), /secret-value|sk-this/);
+  assert.equal(run.warnings.some((warning) => warning.code === "unused-tool"), false);
+});
+
+test("profiles Responses API instructions, tool outputs, and schemas", () => {
+  const largeResult = "record,".repeat(2_000);
+  const run = analyzeExchange({
+    model: "custom-model",
+    instructions: "Summarize the tool result.",
+    input: [
+      { role: "user", content: [{ type: "input_text", text: "Find the records." }] },
+      { type: "function_call_output", call_id: "call_1", output: largeResult },
+    ],
+    tools: [{ type: "function", name: "search", description: "Search", parameters: { type: "object" } }],
+  });
+  assert.ok(run.components.some((component) => component.kind === "system"));
+  assert.ok(run.components.some((component) => component.kind === "tool_result"));
+  assert.ok(run.warnings.some((warning) => warning.code === "large-tool-result"));
+  assert.ok(run.warnings.some((warning) => warning.code === "unknown-pricing"));
+});
+
+test("supports metadata-only capture", () => {
+  const run = analyzeExchange(
+    { model: "gpt-5.6-luna", messages: [{ role: "user", content: "private" }] },
+    null,
+    { captureMode: "none", previewChars: 0 },
+  );
+  assert.equal(run.exchange.captureMode, "none");
+  assert.equal(run.exchange.request, null);
+  assert.equal(run.components[0]?.preview, null);
+});
+
+test("treats an existing tool result as evidence that the tool was used", () => {
+  const run = analyzeExchange({
+    model: "gpt-5.6-luna",
+    metadata: { ctxprof: { label: "sk-abcdefghijklmnopqrstuvwxyz" } },
+    messages: [
+      { role: "user", content: "Look it up" },
+      { role: "tool", name: "lookup", content: "done" },
+    ],
+    tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+  });
+  assert.equal(run.warnings.some((warning) => warning.code === "unused-tool"), false);
+  assert.doesNotMatch(run.label, /sk-/);
+});

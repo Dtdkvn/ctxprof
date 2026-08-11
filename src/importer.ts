@@ -1,0 +1,225 @@
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { analyzeExchange } from "./analyzer.js";
+import { contentHash, redactValue } from "./redaction.js";
+import { isProfileRun } from "./store.js";
+import { stableStringify } from "./tokenizer.js";
+import type { AnalyzeOptions, PricingRecord, ProfileRun } from "./types.js";
+
+export interface ImportOptions {
+  label?: string;
+  promptVersion?: string;
+  model?: string;
+  captureMode?: "none" | "redacted";
+  pricing?: PricingRecord[];
+  source?: ProfileRun["source"];
+}
+
+interface ExchangeRecord {
+  request: unknown;
+  response: unknown;
+  endpoint?: string | undefined;
+  status?: number | null | undefined;
+  durationMs?: number | null | undefined;
+  capturedAt?: string | undefined;
+  label?: string | undefined;
+  promptVersion?: string | undefined;
+  source?: ProfileRun["source"] | undefined;
+}
+
+export interface NamedRun {
+  name: string;
+  run: ProfileRun;
+}
+
+export async function importFile(filePath: string, options: ImportOptions = {}): Promise<NamedRun[]> {
+  const absolute = path.resolve(filePath);
+  const contents = await readFile(absolute, "utf8");
+  const modified = (await stat(absolute)).mtime.toISOString();
+  const values = parseDocument(contents, path.extname(absolute).toLowerCase());
+  const exchanges = values.flatMap(extractRecords);
+  const baseName = path.basename(filePath);
+  return exchanges.map((value, index) => {
+    if (isProfileRun(value)) {
+      return {
+        name: exchanges.length === 1 ? baseName : `${baseName}#${index + 1}`,
+        run: sanitizeImportedRun(value, options.captureMode ?? "redacted"),
+      };
+    }
+    const analyzeOptions: AnalyzeOptions = {
+      source: options.source ?? value.source ?? "import",
+      captureMode: options.captureMode ?? "redacted",
+      capturedAt: value.capturedAt ?? modified,
+      pricing: options.pricing ?? [],
+    };
+    assignString(analyzeOptions, "label", options.label ?? value.label);
+    assignString(analyzeOptions, "promptVersion", options.promptVersion ?? value.promptVersion);
+    assignString(analyzeOptions, "model", options.model);
+    assignString(analyzeOptions, "endpoint", value.endpoint);
+    if (value.status !== undefined) analyzeOptions.status = value.status;
+    if (value.durationMs !== undefined) analyzeOptions.durationMs = value.durationMs;
+    return {
+      name: exchanges.length === 1 ? baseName : `${baseName}#${index + 1}`,
+      run: analyzeExchange(value.request, value.response, analyzeOptions),
+    };
+  });
+}
+
+function sanitizeImportedRun(run: ProfileRun, captureMode: "none" | "redacted"): ProfileRun {
+  const redacted = redactValue(run);
+  const candidate = redacted.value as ProfileRun;
+  if (captureMode === "none") {
+    return {
+      ...candidate,
+      exchange: { request: null, response: null, captureMode: "none", truncated: false },
+    };
+  }
+  const exchange = isRecord(candidate.exchange)
+    ? candidate.exchange as unknown as ProfileRun["exchange"]
+    : { request: null, response: null, captureMode: "redacted" as const, truncated: true };
+  const serialized = stableStringify(exchange);
+  if (Buffer.byteLength(serialized, "utf8") > 256 * 1024) {
+    return {
+      ...candidate,
+      exchange: {
+        request: {
+          notice: "Imported capture exceeded the byte limit and was omitted.",
+          contentHash: contentHash(stableStringify(run.exchange ?? null)),
+        },
+        response: null,
+        captureMode: "redacted",
+        truncated: true,
+      },
+    };
+  }
+  return {
+    ...candidate,
+    exchange: {
+      request: exchange.request ?? null,
+      response: exchange.response ?? null,
+      captureMode: "redacted",
+      truncated: Boolean(exchange.truncated || redacted.truncated),
+    },
+  };
+}
+
+function parseDocument(contents: string, extension: string): unknown[] {
+  if (extension === ".jsonl" || extension === ".ndjson") {
+    const values: unknown[] = [];
+    for (const [index, line] of contents.split(/\r?\n/).entries()) {
+      if (!line.trim()) continue;
+      try {
+        values.push(JSON.parse(line) as unknown);
+      } catch (error) {
+        throw new Error(`Invalid JSON on line ${index + 1}: ${errorMessage(error)}`);
+      }
+    }
+    return values;
+  }
+  const parsed: unknown = JSON.parse(contents);
+  return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+function extractRecords(value: unknown): Array<ExchangeRecord | ProfileRun> {
+  if (isProfileRun(value)) return [value];
+  if (!isRecord(value)) return [{ request: value, response: null }];
+
+  if (isRecord(value.log) && Array.isArray(value.log.entries)) {
+    return value.log.entries.flatMap(extractHarEntry);
+  }
+  if (Array.isArray(value.runs)) return value.runs.flatMap(extractRecords);
+
+  // OpenAI Batch API JSONL request/response shape.
+  if (isRecord(value.body) && typeof value.url === "string") {
+    return [
+      {
+        request: value.body,
+        response: null,
+        endpoint: value.url,
+        label: typeof value.custom_id === "string" ? value.custom_id : undefined,
+      },
+    ];
+  }
+  if (isRecord(value.request) || value.request !== undefined) {
+    const metadata = isRecord(value.metadata) ? value.metadata : {};
+    const responseWrapper = isRecord(value.response) && isRecord(value.response.body)
+      ? value.response.body
+      : value.response ?? null;
+    return [
+      withoutUndefined({
+        request: isRecord(value.request) && isRecord(value.request.body) ? value.request.body : value.request,
+        response: responseWrapper,
+        endpoint: stringValue(value.endpoint) ?? stringValue((value.request as Record<string, unknown> | undefined)?.url),
+        status: numberValue(value.status) ?? numberValue((value.response as Record<string, unknown> | undefined)?.status_code),
+        durationMs: numberValue(value.duration_ms) ?? numberValue(metadata.duration_ms),
+        capturedAt: stringValue(value.captured_at) ?? stringValue(metadata.captured_at),
+        label: stringValue(value.label) ?? stringValue(metadata.label),
+        promptVersion: stringValue(value.prompt_version) ?? stringValue(metadata.prompt_version),
+      }),
+    ];
+  }
+  return [{ request: value, response: null }];
+}
+
+function extractHarEntry(entry: unknown): ExchangeRecord[] {
+  if (!isRecord(entry) || !isRecord(entry.request)) return [];
+  const requestText = isRecord(entry.request.postData) ? entry.request.postData.text : undefined;
+  if (typeof requestText !== "string") return [];
+  let request: unknown;
+  try {
+    request = JSON.parse(requestText);
+  } catch {
+    return [];
+  }
+  let response: unknown = null;
+  if (isRecord(entry.response) && isRecord(entry.response.content) && typeof entry.response.content.text === "string") {
+    const raw = entry.response.content.encoding === "base64"
+      ? Buffer.from(entry.response.content.text, "base64").toString("utf8")
+      : entry.response.content.text;
+    try {
+      response = JSON.parse(raw);
+    } catch {
+      response = { text: raw };
+    }
+  }
+  return [
+    withoutUndefined({
+      request,
+      response,
+      endpoint: stringValue(entry.request.url),
+      status: isRecord(entry.response) ? numberValue(entry.response.status) : undefined,
+      durationMs: numberValue(entry.time),
+      capturedAt: stringValue(entry.startedDateTime),
+    }),
+  ];
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined)) as T;
+}
+
+function assignString<K extends keyof AnalyzeOptions>(
+  target: AnalyzeOptions,
+  key: K,
+  value: unknown,
+): void {
+  if (typeof value === "string" && value.length > 0) {
+    (target as Record<string, unknown>)[key] = value;
+  }
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.test-dist/
+.ctxprof/
+coverage/
+*.log
+.DS_Store
+.env
+report.html
+.gstack/

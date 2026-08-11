@@ -1,0 +1,9 @@
+src/
+test/
+docs/
+examples/
+.github/
+.test-dist/
+tsconfig*.json
+Dockerfile
+docker-compose.yml

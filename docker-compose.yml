@@ -1,0 +1,22 @@
+services:
+  ctxprof:
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CTXPROF_PORT:-8787}:8787"
+    environment:
+      CTXPROF_UPSTREAM: ${CTXPROF_UPSTREAM:-https://api.openai.com}
+      CTXPROF_CAPTURE: ${CTXPROF_CAPTURE:-redacted}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ctxprof-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  ctxprof-data:

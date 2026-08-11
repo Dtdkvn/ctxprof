@@ -1,0 +1,11 @@
+.git
+.github
+.ctxprof*
+.test-dist
+dist
+node_modules
+coverage
+docs
+examples
+test
+*.log

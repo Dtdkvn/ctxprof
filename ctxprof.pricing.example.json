@@ -1,0 +1,10 @@
+[
+  {
+    "model": "my-provider/my-model-v2",
+    "inputPerMillionUsd": 0.5,
+    "outputPerMillionUsd": 1.5,
+    "contextWindow": 131072,
+    "source": "https://provider.example/pricing",
+    "checkedAt": "2026-08-11"
+  }
+]

@@ -1,0 +1,64 @@
+{
+  "captured_at": "2026-08-11T10:05:00.000Z",
+  "prompt_version": "support-v2-regression",
+  "label": "Support lookup regression",
+  "request": {
+    "model": "gpt-5.6-terra",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a support agent. Be helpful, accurate, empathetic, warm, professional, concise, careful, complete, friendly, calm, transparent, respectful, and proactive. Before answering, repeat the request, make a detailed plan, inspect every available fact, and explain every step. Never invent data. Always use plain language. When discussing an order, describe its entire history before giving the current status."
+      },
+      {
+        "role": "user",
+        "content": "Where is order demo-42?"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "find_order",
+          "description": "Find one order by its public reference and return its entire internal history, facilities, staff notes, carrier details, exception codes, timestamps, and customer-facing status.",
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "order_id": {
+                "type": "string",
+                "description": "The exact public order reference supplied by the customer."
+              },
+              "include_history": {
+                "type": "boolean",
+                "description": "Whether to include every historical checkpoint."
+              },
+              "include_internal_notes": {
+                "type": "boolean",
+                "description": "Whether to include staff-authored operational notes."
+              }
+            },
+            "required": [
+              "order_id"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "response": {
+    "model": "gpt-5.6-terra",
+    "choices": [
+      {
+        "message": {
+          "role": "assistant",
+          "content": "The order is scheduled for tomorrow."
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 520,
+      "completion_tokens": 35,
+      "total_tokens": 555
+    }
+  }
+}
