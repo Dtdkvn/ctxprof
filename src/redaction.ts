@@ -79,15 +79,24 @@ function isSensitiveKey(key: string): boolean {
     compact.includes("password") ||
     compact.includes("privatekey") ||
     compact.includes("clientsecret") ||
+    compact.includes("awssecretaccesskey") ||
     compact === "authorization" ||
     compact === "auth" ||
     compact === "cookie" ||
     compact === "secret" ||
     compact === "session" ||
     compact === "token" ||
+    compact === "jwt" ||
+    compact.endsWith("apitoken") ||
+    compact.endsWith("authtoken") ||
+    compact.endsWith("bearertoken") ||
+    compact.endsWith("sessiontoken") ||
     compact.endsWith("accesstoken") ||
     compact.endsWith("refreshtoken") ||
-    compact.endsWith("idtoken")
+    compact.endsWith("idtoken") ||
+    compact.endsWith("sessionid") ||
+    compact.endsWith("signingsecret") ||
+    compact.endsWith("webhooksecret")
   );
 }
 

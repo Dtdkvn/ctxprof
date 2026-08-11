@@ -4,7 +4,7 @@ Thank you for helping make LLM context visible and affordable. Small, focused ch
 
 ## Set up
 
-Requirements: Node.js 20 or 22 and npm 10+.
+Requirements: Node.js 22 or 24 and npm 10+.
 
 ```bash
 git clone <your-fork-url>
@@ -13,7 +13,7 @@ npm ci
 npm run check
 ```
 
-Run the no-key demo with `npm run demo`, or use `npm run dev -- proxy` for TypeScript watch-time execution.
+Run the no-key demo with `npm run demo`, or use `npm run dev -- proxy` to execute the TypeScript source directly.
 
 ## Before opening a pull request
 
@@ -22,7 +22,9 @@ npm run check
 npm run smoke
 ```
 
-The check runs repository lint, strict TypeScript checking, 14+ unit/integration tests, and the production build. The smoke test exercises the built CLI, HTML report, A/B comparison, and this repository's own context budget.
+The check runs repository lint, strict TypeScript checking, the full unit/integration suite, the production build, and verifies the checked-in offline Action artifact. The smoke tests exercise the built CLI, packaged Action, npm tarball, HTML report, A/B comparison, and this repository's own context budget.
+
+After changing runtime source, regenerate the committed Action modules with `npm run build:action`. CI fails if `action-dist/` is stale.
 
 Please also:
 

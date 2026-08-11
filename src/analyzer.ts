@@ -16,6 +16,7 @@ interface DraftComponent {
   kind: ComponentKind;
   label: string;
   text: string;
+  previewSource: unknown;
   overheadTokens?: number;
 }
 
@@ -63,12 +64,17 @@ export function analyzeExchange(
   );
   const estimatedInputTokens = rawEstimates.reduce((sum, tokens) => sum + tokens, 0);
   const allocated = allocateTokens(rawEstimates, providerUsage.inputTokens ?? estimatedInputTokens);
-  const previewChars = Math.max(0, options.previewChars ?? 180);
+  const captureMode = options.captureMode ?? "redacted";
+  // `none` is the CLI's strongest privacy mode. Component previews contain
+  // prompt text too, so omitting only the exchange would be misleading.
+  const previewChars = captureMode === "none" ? 0 : Math.max(0, options.previewChars ?? 180);
 
   const components: ContextComponent[] = drafts.map((draft, index) => {
     const estimatedTokens = rawEstimates[index] ?? 0;
     const allocatedInputTokens = allocated[index] ?? estimatedTokens;
-    const redacted = redactValue(draft.text, { maxStringChars: previewChars });
+    // Redact the structured source before serializing it. Redacting `draft.text`
+    // alone loses sensitive key names such as `api_key` embedded in JSON.
+    const redacted = redactValue(draft.previewSource, { maxStringChars: previewChars });
     const previewValue = typeof redacted.value === "string" ? redacted.value : stableStringify(redacted.value);
     const safeLabel = safeField(draft.label, 240);
     return {
@@ -98,7 +104,6 @@ export function analyzeExchange(
     : null;
   const warnings = buildWarnings(requestRecord, responseRecord, components, pricing);
   const estimatedWasteTokens = estimateUniqueWaste(warnings);
-  const captureMode = options.captureMode ?? "redacted";
   const captured = captureExchange(
     request,
     response,
@@ -144,7 +149,13 @@ export function analyzeExchange(
 function extractComponents(request: Record<string, unknown>): DraftComponent[] {
   const result: DraftComponent[] = [];
   if (typeof request.instructions === "string" && request.instructions.length > 0) {
-    result.push({ kind: "system", label: "Responses instructions", text: request.instructions, overheadTokens: 3 });
+    result.push({
+      kind: "system",
+      label: "Responses instructions",
+      text: request.instructions,
+      previewSource: request.instructions,
+      overheadTokens: 3,
+    });
   }
 
   const messages = Array.isArray(request.messages)
@@ -156,7 +167,13 @@ function extractComponents(request: Record<string, unknown>): DraftComponent[] {
         : [];
   for (const [index, rawMessage] of messages.entries()) {
     if (!isRecord(rawMessage)) {
-      result.push({ kind: "message", label: `Input ${index + 1}`, text: stableStringify(rawMessage), overheadTokens: 4 });
+      result.push({
+        kind: "message",
+        label: `Input ${index + 1}`,
+        text: stableStringify(rawMessage),
+        previewSource: rawMessage,
+        overheadTokens: 4,
+      });
       continue;
     }
     const role = typeof rawMessage.role === "string" ? rawMessage.role : "input";
@@ -167,6 +184,7 @@ function extractComponents(request: Record<string, unknown>): DraftComponent[] {
       kind,
       label: messageLabel(rawMessage, role, type, index),
       text,
+      previewSource: messagePreviewSource(rawMessage),
       overheadTokens: 4,
     });
   }
@@ -178,6 +196,7 @@ function extractComponents(request: Record<string, unknown>): DraftComponent[] {
         kind: "tools",
         label: `Tool · ${name}`,
         text: stableStringify(tool),
+        previewSource: tool,
         overheadTokens: 4,
       });
     }
@@ -189,12 +208,19 @@ function extractComponents(request: Record<string, unknown>): DraftComponent[] {
       kind: "other",
       label: "Response format",
       text: stableStringify(responseFormat),
+      previewSource: responseFormat,
       overheadTokens: 2,
     });
   }
   return result.length > 0
     ? result
-    : [{ kind: "other", label: "Serialized request", text: stableStringify(request), overheadTokens: 2 }];
+    : [{
+        kind: "other",
+        label: "Serialized request",
+        text: stableStringify(request),
+        previewSource: request,
+        overheadTokens: 2,
+      }];
 }
 
 function classifyMessage(role: string, type: string): ComponentKind {
@@ -235,6 +261,11 @@ function extractMessageText(message: Record<string, unknown>): string {
   }
   if (content !== undefined) return stableStringify(content);
   return stableStringify(message);
+}
+
+function messagePreviewSource(message: Record<string, unknown>): unknown {
+  const content = message.content ?? message.output ?? message.text;
+  return content === undefined ? message : content;
 }
 
 function buildWarnings(
@@ -431,10 +462,17 @@ function captureExchange(
 function allocateTokens(estimates: number[], target: number): number[] {
   const total = estimates.reduce((sum, value) => sum + value, 0);
   if (estimates.length === 0 || total === 0) return [];
-  const result = estimates.map((value) => Math.round((value / total) * target));
-  const difference = target - result.reduce((sum, value) => sum + value, 0);
-  const largestIndex = estimates.indexOf(Math.max(...estimates));
-  result[largestIndex] = Math.max(0, (result[largestIndex] ?? 0) + difference);
+  const integerTarget = Math.max(0, Math.round(target));
+  const exact = estimates.map((value) => (value / total) * integerTarget);
+  const result = exact.map(Math.floor);
+  let remaining = integerTarget - result.reduce((sum, value) => sum + value, 0);
+  const byRemainder = exact
+    .map((value, index) => ({ index, remainder: value - Math.floor(value) }))
+    .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+  for (let index = 0; index < remaining; index += 1) {
+    const targetIndex = byRemainder[index]?.index;
+    if (targetIndex !== undefined) result[targetIndex] = (result[targetIndex] ?? 0) + 1;
+  }
   return result;
 }
 

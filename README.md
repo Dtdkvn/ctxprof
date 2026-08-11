@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img alt="Node.js 20+" src="https://img.shields.io/badge/Node.js-20%2B-5fa04e?style=flat-square">
+  <img alt="Node.js 22+" src="https://img.shields.io/badge/Node.js-22%2B-5fa04e?style=flat-square">
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-8b5cf6?style=flat-square">
   <img alt="local first" src="https://img.shields.io/badge/privacy-local--first-2dd4bf?style=flat-square">
   <img alt="zero runtime dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-60a5fa?style=flat-square">
@@ -28,7 +28,7 @@ Ctxprof exists because a request that says “12k tokens” does not tell you wh
 - **Measure prompt changes like code changes.** Stable version labels produce A→B token, cost, warning, and component diffs across representative captures.
 - **Put a budget in CI.** Commit a baseline and fail a pull request when total tokens, estimated cost, or any component grows past its allowance.
 
-Everything runs locally. The proxy has zero runtime dependencies, listens on loopback by default, never stores headers, redacts common secrets, and offers a `--capture none` metadata-only mode.
+Everything runs locally. The proxy has zero runtime dependencies, listens on loopback by default, never stores ordinary request/response headers, redacts common secrets, and offers a preview-free `--capture none` mode. The explicit `x-ctxprof-label` and `x-ctxprof-version` values become bounded run metadata.
 
 ## Quick start
 
@@ -71,7 +71,7 @@ const client = new OpenAI({
 });
 ```
 
-The optional headers are consumed locally and are not forwarded upstream. An incoming `Authorization` header takes precedence over `OPENAI_API_KEY`; neither is persisted.
+The optional headers are consumed locally, persisted as the bounded `label` and `promptVersion` fields, and not forwarded upstream. Do not put secrets in them. An incoming `Authorization` header takes precedence over `OPENAI_API_KEY`; neither credential is persisted.
 
 Open the live dashboard at the same origin, or export a portable report:
 
@@ -87,6 +87,16 @@ Point `--upstream` at a local or hosted server exposing OpenAI-compatible `/v1/c
 ```bash
 ctxprof proxy --upstream http://127.0.0.1:1234/v1
 ```
+
+The upstream deadline defaults to two minutes and can be changed with `--upstream-timeout-ms` or `CTXPROF_UPSTREAM_TIMEOUT_MS`. Redirects are never followed.
+
+For deliberate team access behind an authenticated reverse proxy, allow both the remote bind and its exact public hostname:
+
+```bash
+ctxprof serve --host 0.0.0.0 --allow-remote --allowed-host ctxprof.example
+```
+
+`--allowed-host` accepts a hostname only—no scheme, port, path, or wildcard—and can be repeated. Without it, a wildcard bind accepts only literal local/socket IP Host values and localhost; this keeps arbitrary DNS names from reading the unauthenticated dashboard.
 
 Unknown models still receive component and token analysis. Cost stays visibly **unknown** until there is an exact catalog match—Ctxprof never guesses a similar model's price.
 
@@ -143,12 +153,12 @@ The check exits `1` and explains every violated metric. A cost limit also fails 
 ### GitHub Action
 
 ```yaml
-- uses: your-github-owner/ctxprof@v1
+- uses: yewud/ctxprof@v0.1.0
   with:
     config: ctxprof.config.json
 ```
 
-The action emits native workflow annotations. See the complete [workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
+The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Pin an immutable release or full commit SHA. It emits native workflow annotations; see the complete [workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
 
 ## What the profiler counts
 
@@ -198,7 +208,7 @@ Default capture is safer, not magical:
 - stored exchanges are capped; oversized bodies are omitted and represented by a hash;
 - previews are redacted and short;
 - there is no “unsafe full capture” switch;
-- `--capture none` retains component metrics and hashes but omits request/response bodies.
+- `--capture none` retains component metrics and hashes but omits request/response bodies and component previews.
 
 Redaction cannot recognize every private or proprietary string. The local dashboard has no authentication and must not be exposed directly to an untrusted network. Read [SECURITY.md](SECURITY.md) and the detailed [privacy guide](docs/PRIVACY.md) before profiling production traffic.
 
@@ -258,7 +268,7 @@ npm run check
 npm run smoke
 ```
 
-Node 20 and 22 are tested. Runtime code uses only Node built-ins; TypeScript and `tsx` are development dependencies. Docker, GitHub Actions, a JSON Schema, fixtures, and a mock-upstream integration test are included.
+Node 22 and 24 are tested. Runtime code uses only Node built-ins; TypeScript and `tsx` are development dependencies. Docker, GitHub Actions, a JSON Schema, fixtures, and a mock-upstream integration test are included.
 
 Contributions are welcome—especially new import adapters, conservative waste heuristics, and dated pricing updates backed by official provider sources. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 

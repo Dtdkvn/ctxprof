@@ -37,7 +37,7 @@ npx ctxprof check
 
 Exit code `0` means every case passed. Exit code `1` means at least one hard limit, regression limit, missing case, or required price check failed. `--json` returns structured metrics and violations.
 
-For GitHub-hosted workflows, use the composite action in [examples/github-actions/context-budget.yml](../examples/github-actions/context-budget.yml). `--github` emits `::error` annotations if you invoke the CLI directly.
+For GitHub-hosted workflows, use the Node 24 JavaScript Action in [examples/github-actions/context-budget.yml](../examples/github-actions/context-budget.yml). It runs its checked-in JavaScript without downloading dependencies, compiling, or depending on the caller's `node` executable. `--github` emits `::error` annotations if you invoke the CLI directly.
 
 ## Useful policies
 

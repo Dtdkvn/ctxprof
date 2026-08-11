@@ -15,8 +15,8 @@ jobs:
   budget:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # Replace the owner and pin a released major tag after publishing.
-      - uses: your-github-owner/ctxprof@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pin an immutable reviewed release (or full commit SHA).
+      - uses: yewud/ctxprof@v0.1.0
         with:
           config: ctxprof.config.json

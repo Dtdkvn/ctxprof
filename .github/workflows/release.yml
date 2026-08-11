@@ -6,24 +6,92 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  npm:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          fetch-depth: 0
+      - name: Validate release tag provenance
+        run: |
+          set -euo pipefail
+          node --input-type=commonjs <<'NODE'
+          const tag = process.env.GITHUB_REF_NAME;
+          const version = require("./package.json").version;
+          const match = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/.exec(version);
+          const identifiersValid = (part, rejectNumericLeadingZero) => part === undefined || part.split(".").every(
+            (id) => id.length > 0 && /^[0-9A-Za-z-]+$/.test(id) &&
+              (!rejectNumericLeadingZero || !/^0[0-9]+$/.test(id)),
+          );
+          if (!match || !identifiersValid(match[4], true) || !identifiersValid(match[5], false) || tag !== `v${version}`) {
+            throw new Error(`Release tag ${tag} must exactly match package version v${version}.`);
+          }
+          NODE
+          git fetch --no-tags origin main
+          commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          git merge-base --is-ancestor "$commit" origin/main
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - uses: softprops/action-gh-release@v2
+      - run: npm run smoke
+      - run: npm run smoke:action
+      - run: npm run smoke:package
+      - run: npm audit --audit-level=high
+      - name: Build release tarball
+        run: |
+          mkdir -p release
+          npm pack --pack-destination release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package
+          path: release/*.tgz
+          if-no-files-found: error
+          retention-days: 5
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package
+          path: release
+      - name: Publish the verified tarball with trusted publishing
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          tarball="release/ctxprof-${version}.tgz"
+          test -f "$tarball"
+          published_shasum="$(npm view "ctxprof@${version}" dist.shasum 2>/dev/null || true)"
+          if [ -n "$published_shasum" ]; then
+            local_shasum="$(sha1sum "$tarball" | awk '{print $1}')"
+            test "$local_shasum" = "$published_shasum"
+            echo "ctxprof@${version} is already published with the verified tarball; skipping npm publish."
+          else
+            npm publish "$tarball" --ignore-scripts --provenance --access public
+          fi
+      - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           generate_release_notes: true
+          files: release/*.tgz

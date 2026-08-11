@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluateBudget, makeBaseline, metricsForRuns, readBaseline, readBudgetConfig, writeBaseline } from "./budget.js";
 import { compareVersions, versionsIn } from "./compare.js";
 import { createDemoRuns } from "./demo.js";
@@ -19,8 +20,8 @@ const BOOLEAN_OPTIONS = new Set(["help", "json", "allow-remote", "update-baselin
 const COMMAND_OPTIONS: Record<string, ReadonlySet<string>> = {
   analyze: optionSet("help", "json", "pricing", "capture", "label", "prompt-version", "model", "report"),
   import: optionSet("help", "data", "pricing", "capture", "label", "prompt-version", "model"),
-  proxy: optionSet("help", "data", "pricing", "capture", "host", "port", "upstream", "allow-remote", "label", "prompt-version"),
-  serve: optionSet("help", "data", "pricing", "capture", "host", "port", "allow-remote", "label", "prompt-version"),
+  proxy: optionSet("help", "data", "pricing", "capture", "host", "port", "upstream", "upstream-timeout-ms", "allow-remote", "allowed-host", "label", "prompt-version"),
+  serve: optionSet("help", "data", "pricing", "capture", "host", "port", "allow-remote", "allowed-host", "label", "prompt-version"),
   report: optionSet("help", "data", "output", "title", "limit"),
   compare: optionSet("help", "data", "from", "to", "json"),
   check: optionSet(
@@ -120,16 +121,22 @@ async function serverCommand(parsed: ParsedArgs, proxy: boolean): Promise<number
   const upstream = proxy
     ? stringOption(parsed, "upstream") ?? process.env.CTXPROF_UPSTREAM ?? "https://api.openai.com"
     : undefined;
+  const upstreamTimeoutMs = proxy
+    ? numberOption(parsed, "upstream-timeout-ms") ?? numberFromEnv("CTXPROF_UPSTREAM_TIMEOUT_MS")
+    : undefined;
   if (upstream) validateUpstream(upstream);
   const defaultLabel = stringOption(parsed, "label");
   const defaultPromptVersion = stringOption(parsed, "prompt-version");
+  const allowedHosts = stringOptions(parsed, "allowed-host");
   const running = await startServer({
     host,
     port,
     store,
     ...(upstream ? { upstream } : {}),
+    ...(upstreamTimeoutMs !== undefined ? { upstreamTimeoutMs } : {}),
     ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
     allowRemote: hasFlag(parsed, "allow-remote"),
+    ...(allowedHosts.length ? { allowedHosts } : {}),
     captureMode: capture,
     pricing,
     ...(defaultLabel ? { defaultLabel } : {}),
@@ -405,6 +412,12 @@ function stringOption(parsed: ParsedArgs, name: string): string | undefined {
   return undefined;
 }
 
+function stringOptions(parsed: ParsedArgs, name: string): string[] {
+  const value = parsed.options.get(name);
+  if (typeof value === "string") return [value];
+  return Array.isArray(value) ? value : [];
+}
+
 function numberOption(parsed: ParsedArgs, name: string): number | undefined {
   const value = stringOption(parsed, name);
   if (value === undefined) return undefined;
@@ -489,11 +502,15 @@ async function waitForStop(): Promise<void> {
 }
 
 function printHelp(command?: string): void {
-  if (command === "check") {
-    process.stdout.write(`ctxprof check [files...] [options]\n\nFail CI when context tokens, cost, warnings, or components exceed limits or regress from a committed baseline.\n\nOptions:\n  --config <file>              Budget config (default ctxprof.config.json)\n  --baseline <file>            Override baseline path\n  --update-baseline            Write the current metrics as baseline\n  --max-input-tokens <n>       Absolute input-token ceiling\n  --token-regression <pct>     Allowed input-token growth\n  --component-regression <pct> Allowed growth for every component kind\n  --github                     Emit GitHub workflow annotations\n  --json                       Machine-readable result\n`);
+  if (command === "proxy" || command === "serve") {
+    process.stdout.write(`ctxprof ${command} [options]\n\n${command === "proxy" ? "Run the recording proxy and live dashboard." : "Serve the local capture dashboard without an upstream proxy."}\n\nOptions:\n  --host <address>               Bind address (default 127.0.0.1)\n  --port <n>                     Listen port (default 8787)\n  --allow-remote                 Permit a non-loopback bind\n  --allowed-host <hostname>      Allow an exact reverse-proxy Host (repeatable)\n${command === "proxy" ? "  --upstream <url>               OpenAI-compatible upstream URL\n  --upstream-timeout-ms <n>     Upstream deadline in milliseconds\n" : ""}  --data <dir>                   Store directory (default .ctxprof)\n  --capture redacted|none       Stored body policy (default redacted)\n  --help                         Show this help\n`);
     return;
   }
-  process.stdout.write(`ctxprof ${VERSION} — the flamegraph for your context window\n\nUsage:\n  ctxprof <command> [options]\n\nCapture and inspect\n  proxy     Run an OpenAI-compatible recording proxy + dashboard\n  serve     View captures without enabling upstream proxying\n  import    Add HAR, JSON, or JSONL exchanges to the local store\n  analyze   Profile files without saving them\n  report    Export a self-contained interactive HTML report\n  demo      Load a deterministic A/B demo (no API key required)\n\nGuard and compare\n  compare   Compare aggregate prompt versions A → B\n  check     Run a context budget test for CI\n  pricing   Show the dated built-in pricing catalog\n  doctor    Check the local runtime and privacy defaults\n\nGlobal options\n  --data <dir>                 Store directory (default .ctxprof)\n  --pricing <file>             Exact custom model pricing JSON\n  --capture redacted|none      Stored body policy (default redacted)\n  --help                       Show help\n\nQuick start:\n  ctxprof demo\n  ctxprof serve\n\nProxy an app:\n  ctxprof proxy --upstream https://api.openai.com --port 8787\n  # point the SDK base URL to http://127.0.0.1:8787/v1\n`);
+  if (command === "check") {
+    process.stdout.write(`ctxprof check [files...] [options]\n\nFail CI when context tokens, cost, warnings, or components exceed limits or regress from a committed baseline.\n\nOptions:\n  --config <file>              Budget config (default ctxprof.config.json)\n  --baseline <file>            Override baseline path\n  --pricing <file>             Exact custom model pricing JSON\n  --update-baseline            Write the current metrics as baseline\n  --max-input-tokens <n>       Absolute input-token ceiling\n  --max-total-tokens <n>       Absolute input + output-token ceiling\n  --max-cost <usd>             Absolute estimated-cost ceiling\n  --max-warnings <n>           Absolute actionable-warning ceiling\n  --token-regression <pct>     Allowed input-token growth\n  --total-regression <pct>     Allowed total-token growth\n  --cost-regression <pct>      Allowed estimated-cost growth\n  --component-regression <pct> Allowed growth for every component kind\n  --github                     Emit GitHub workflow annotations\n  --json                       Machine-readable result\n  --help                       Show this help\n`);
+    return;
+  }
+  process.stdout.write(`ctxprof ${VERSION} — the flamegraph for your context window\n\nUsage:\n  ctxprof <command> [options]\n\nCapture and inspect\n  proxy     Run an OpenAI-compatible recording proxy + dashboard\n  serve     View captures without enabling upstream proxying\n  import    Add HAR, JSON, or JSONL exchanges to the local store\n  analyze   Profile files without saving them\n  report    Export a self-contained interactive HTML report\n  demo      Load a deterministic A/B demo (no API key required)\n\nGuard and compare\n  compare   Compare aggregate prompt versions A → B\n  check     Run a context budget test for CI\n  pricing   Show the dated built-in pricing catalog\n  doctor    Check the local runtime and privacy defaults\n\nCommon options (where supported)\n  --data <dir>                 Store directory (default .ctxprof)\n  --pricing <file>             Exact custom model pricing JSON\n  --capture redacted|none      Stored body policy (default redacted)\n  --help                       Show help\n\nQuick start:\n  ctxprof demo\n  ctxprof serve\n\nProxy an app:\n  ctxprof proxy --upstream https://api.openai.com --port 8787\n  # point the SDK base URL to http://127.0.0.1:8787/v1\n`);
 }
 
 function line(name: string, value: string, suffix: string): string {
@@ -524,7 +541,7 @@ function escapeWorkflow(value: string): string {
   return value.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isDirectExecution()) {
   process.stdout.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EPIPE") process.exit(0);
     throw error;
@@ -539,4 +556,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       process.exitCode = 1;
     },
   );
+}
+
+function isDirectExecution(): boolean {
+  if (!process.argv[1]) return false;
+  const entryPath = path.resolve(process.argv[1]);
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entryPath);
+  } catch {
+    return import.meta.url === pathToFileURL(entryPath).href;
+  }
 }

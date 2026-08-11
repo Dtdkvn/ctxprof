@@ -17,24 +17,35 @@
   },
   "files": [
     "dist",
-    "docs/ctxprof-config.schema.json",
+    "docs",
+    "examples/github-actions/context-budget.yml",
+    "ctxprof.config.json",
     "ctxprof.pricing.example.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SECURITY.md",
+    "ARCHITECTURE.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "CHANGELOG.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "build:action": "npm run build && node scripts/build-action.mjs",
+    "check:action": "node scripts/build-action.mjs --check",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "node scripts/lint.mjs",
-    "test": "npm run build:test && node --test .test-dist/test",
+    "test": "npm run build:test && node scripts/run-tests.mjs",
     "build:test": "tsc -p tsconfig.test.json",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run check:action",
     "dev": "node --enable-source-maps --import=tsx src/cli.ts",
     "demo": "npm run build && node dist/cli.js demo",
     "smoke": "npm run build && node scripts/smoke.mjs",
+    "smoke:action": "node scripts/smoke-action.mjs",
+    "smoke:package": "node scripts/smoke-package.mjs",
     "prepublishOnly": "npm run check"
   },
   "keywords": [
@@ -47,9 +58,22 @@
     "ai-observability",
     "github-action"
   ],
+  "author": "Ctxprof contributors",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yewud/ctxprof.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yewud/ctxprof/issues"
+  },
+  "homepage": "https://github.com/yewud/ctxprof#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "devDependencies": {
-    "@types/node": "^20.17.0",
+    "@types/node": "^24.13.3",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

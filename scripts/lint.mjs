@@ -16,6 +16,7 @@ const rootFiles = [
   "CODE_OF_CONDUCT.md",
   "ARCHITECTURE.md",
   "CHANGELOG.md",
+  "PROGRESS.md",
   "Dockerfile",
   "docker-compose.yml",
   "action.yml",

@@ -12,7 +12,7 @@ Use it only when storing a sanitized version of the traffic on the machine is ac
 
 ### `none`
 
-The exchange body is omitted. Component labels, counts, shares, and short previews are still produced by the CLI/proxy analyzer. Library users can also set `previewChars: 0` to remove snippets. Content hashes remain for duplicate detection.
+The exchange body and component previews are omitted. Component labels, counts, shares, and content hashes remain for duplicate detection and budget comparisons. This rule also applies to library calls: `captureMode: "none"` always wins over `previewChars`.
 
 ```bash
 ctxprof proxy --capture none
@@ -28,7 +28,7 @@ For highly sensitive data, create a synthetic fixture that preserves shape and s
 - safe error messages before printing;
 - long strings and oversized full exchanges.
 
-Headers are never copied into analysis records at all.
+Ordinary request and response headers are never copied into analysis records. The explicit `x-ctxprof-label` and `x-ctxprof-version` values are converted into bounded, redacted run metadata and are never forwarded upstream.
 
 ## What may remain
 
@@ -48,7 +48,7 @@ Ctxprof writes `.ctxprof/runs.jsonl` and does not expose a delete API. This make
 
 ## Network exposure
 
-The native CLI refuses non-loopback binds without `--allow-remote`. Docker must listen on `0.0.0.0` inside its network namespace, but the supplied Compose file maps the port to host `127.0.0.1` only.
+The native CLI refuses non-loopback binds without `--allow-remote`. A remote reverse-proxy domain also needs an exact repeatable `--allowed-host <hostname>`; schemes, ports, paths, and wildcards are rejected. Docker must listen on `0.0.0.0` inside its network namespace, but the supplied Compose file maps the port to host `127.0.0.1` only.
 
 There is no dashboard authentication. For approved shared access, add TLS and identity-aware authentication in a reverse proxy, restrict source networks, and treat the JSON API as sensitive.
 

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { analyzeExchange } from "../src/analyzer.js";
 import {
   evaluateBudget,
   makeBaseline,
@@ -22,6 +23,15 @@ test("passes an unchanged context baseline", async () => {
     makeBaseline(cases),
   );
   assert.equal(result.passed, true);
+});
+
+test("accepts the canonical price for a case-insensitive model identifier", () => {
+  const run = analyzeExchange(
+    { model: "GPT-5", messages: [{ role: "user", content: "Hello" }] },
+    { usage: { prompt_tokens: 8, completion_tokens: 2 } },
+  );
+  const cases = metricsForRuns([{ name: "case-insensitive-model", run }]);
+  assert.equal(cases["case-insensitive-model"]?.estimatedCostUsd, run.totals.estimatedTotalCostUsd);
 });
 
 test("validates configuration and creates baseline parent directories", async (context) => {
@@ -62,4 +72,55 @@ test("requires new regression cases to be acknowledged in the baseline", async (
   );
   assert.equal(result.passed, false);
   assert.match(result.violations[0]?.message ?? "", /missing from the committed baseline/);
+});
+
+test("fails closed when a library caller supplies non-finite run metrics", () => {
+  const malformed = {
+    name: "forged.json",
+    run: {
+      components: [{ kind: "system", allocatedInputTokens: Number.NaN }],
+      warnings: [],
+      totals: {
+        providerInputTokens: null,
+        estimatedInputTokens: Number.NaN,
+        totalTokens: Number.NaN,
+        estimatedTotalCostUsd: null,
+      },
+    },
+  };
+  assert.throws(
+    () => metricsForRuns([malformed as never]),
+    /not finite and internally consistent/,
+  );
+});
+
+test("rejects forged normalized costs before a budget can treat them as zero", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-forged-cost-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const run = analyzeExchange(
+    { model: "priced-model", messages: [{ role: "user", content: "budget me" }] },
+    { usage: { prompt_tokens: 1_000, completion_tokens: 500 } },
+    {
+      pricing: [{
+        model: "priced-model",
+        inputPerMillionUsd: 10,
+        outputPerMillionUsd: 20,
+        contextWindow: 10_000,
+        source: "https://example.invalid/pricing",
+        checkedAt: "2026-08-12",
+      }],
+    },
+  );
+  run.totals.estimatedInputCostUsd = 0;
+  run.totals.estimatedOutputCostUsd = 0;
+  run.totals.estimatedTotalCostUsd = 0;
+  for (const component of run.components) component.estimatedCostUsd = 0;
+  const input = path.join(directory, "forged-cost.json");
+  await writeFile(input, JSON.stringify(run), "utf8");
+
+  await assert.rejects(() => importFile(input), /Invalid ProfileRun schema/);
+  assert.throws(
+    () => metricsForRuns([{ name: "forged-cost.json", run }]),
+    /not finite and internally consistent/,
+  );
 });

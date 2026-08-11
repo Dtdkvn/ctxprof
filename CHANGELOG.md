@@ -4,6 +4,15 @@ All notable changes will be documented here. Ctxprof follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardened proxy Host/Origin boundaries, identity-header filtering, response encoding, abort propagation, and bounded stream accounting.
+- Made redaction structure-aware, removed previews from `--capture none`, and covered common camelCase secret keys.
+- Made normalized-run validation and budget metrics fail closed, and made component allocation exactly preserve provider totals.
+- Upgraded supported runtimes to maintained Node.js 22/24 releases.
+- Shipped an offline prebuilt GitHub Action, hardened release provenance/trusted publishing, and pinned Actions and container images.
+- Completed CLI help and npm tarball documentation assets.
+
 ### Roadmap
 
 - Pluggable exact tokenizers without making the safe offline core dependent on native modules.

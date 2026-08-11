@@ -31,6 +31,7 @@ test("re-redacts normalized runs and honors metadata-only import", async (contex
   const run = createDemoRuns()[0]!;
   run.label = "sk-abcdefghijklmnopqrstuvwxyz";
   run.exchange.request = { api_key: "sk-should-not-survive-normalized-import" };
+  run.components[0]!.preview = "private component preview";
   const input = path.join(directory, "run.json");
   await writeFile(input, JSON.stringify(run), "utf8");
 
@@ -41,4 +42,21 @@ test("re-redacts normalized runs and honors metadata-only import", async (contex
   const metadataOnly = await importFile(input, { captureMode: "none" });
   assert.equal(metadataOnly[0]?.run.exchange.request, null);
   assert.equal(metadataOnly[0]?.run.exchange.captureMode, "none");
+  assert.ok(metadataOnly[0]?.run.components.every((component) => component.preview === null));
+});
+
+test("rejects malformed normalized runs instead of treating missing metrics as zero", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-invalid-run-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const input = path.join(directory, "forged.json");
+  await writeFile(input, JSON.stringify({
+    schemaVersion: 1,
+    id: "forged",
+    model: "gpt-5",
+    components: [{ kind: "system" }],
+    totals: {},
+    warnings: [],
+    exchange: { request: null, response: null, captureMode: "none", truncated: false },
+  }), "utf8");
+  await assert.rejects(() => importFile(input), /Invalid ProfileRun schema/);
 });

@@ -56,7 +56,7 @@ flowchart TB
   Proxy -->|"TLS, credentials + original request"| Provider["Configured upstream provider"]
 ```
 
-The proxy and application share the same trust level. The upstream provider is explicitly chosen by the operator. The browser is local but unauthenticated. Disk is not assumed to be encrypted. See [SECURITY.md](SECURITY.md) for deployment guidance.
+The proxy and application share the same trust level. The upstream provider is explicitly chosen by the operator. The browser is local but unauthenticated; exact Host allowlisting and same-origin Origin checks prevent unrelated DNS/browser origins from treating the dashboard as their own service. Remote reverse-proxy domains are explicit `allowedHosts`, never trusted from forwarding headers. Disk is not assumed to be encrypted. See [SECURITY.md](SECURITY.md) for deployment guidance.
 
 ## ProfileRun v1
 
@@ -100,7 +100,7 @@ There are no mutation endpoints for stored captures in v0.1. Filesystem access r
 
 ## Invariants
 
-1. Never persist request or response headers.
+1. Never persist ordinary request or response headers; only the documented `x-ctxprof-label` and `x-ctxprof-version` values become run metadata.
 2. Never print credentials or captured content.
 3. Reject remote binding unless the operator supplies `--allow-remote`.
 4. Never price a fuzzy/nearby model ID.

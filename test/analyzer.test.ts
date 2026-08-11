@@ -58,11 +58,48 @@ test("supports metadata-only capture", () => {
   const run = analyzeExchange(
     { model: "gpt-5.6-luna", messages: [{ role: "user", content: "private" }] },
     null,
-    { captureMode: "none", previewChars: 0 },
+    { captureMode: "none" },
   );
   assert.equal(run.exchange.captureMode, "none");
   assert.equal(run.exchange.request, null);
   assert.equal(run.components[0]?.preview, null);
+});
+
+test("redacts structured component previews before serialization", () => {
+  const run = analyzeExchange({
+    model: "custom-model",
+    messages: [
+      {
+        role: "user",
+        content: {
+          api_key: "arbitrary-sensitive-value",
+          nested: { authToken: "another-sensitive-value" },
+          safe: "visible",
+        },
+      },
+    ],
+  });
+  assert.match(run.components[0]?.preview ?? "", /visible/);
+  assert.doesNotMatch(run.components[0]?.preview ?? "", /arbitrary-sensitive|another-sensitive/);
+  assert.match(run.components[0]?.preview ?? "", /\[REDACTED\]/);
+});
+
+test("preserves provider totals across many rounded components", () => {
+  const run = analyzeExchange(
+    {
+      model: "gpt-5",
+      messages: Array.from({ length: 100 }, () => ({ role: "user", content: "x" })),
+    },
+    { usage: { prompt_tokens: 350, completion_tokens: 0 } },
+    { captureMode: "none" },
+  );
+  assert.equal(run.components.reduce((sum, component) => sum + component.allocatedInputTokens, 0), 350);
+  assert.equal(run.totals.providerInputTokens, 350);
+  const componentCost = run.components.reduce(
+    (sum, component) => sum + (component.estimatedCostUsd ?? 0),
+    0,
+  );
+  assert.ok(Math.abs(componentCost - (run.totals.estimatedInputCostUsd ?? 0)) < 1e-12);
 });
 
 test("treats an existing tool result as evidence that the tool was used", () => {

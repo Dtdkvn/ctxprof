@@ -17,6 +17,20 @@ test("redacts sensitive keys recursively without mutating input", () => {
   assert.equal(input.api_key, "sk-live-abcdefghijkl");
 });
 
+test("redacts common camelCase token and identity secret keys", () => {
+  const input = {
+    apiToken: "synthetic-api-token",
+    authToken: "synthetic-auth-token",
+    sessionToken: "synthetic-session-token",
+    awsSecretAccessKey: "synthetic-aws-secret",
+    sessionId: "synthetic-session-id",
+    signingSecret: "synthetic-signing-secret",
+    webhookSecret: "synthetic-webhook-secret",
+  };
+  const result = redactValue(input).value as Record<string, unknown>;
+  for (const key of Object.keys(input)) assert.equal(result[key], "[REDACTED]");
+});
+
 test("redacts common inline secret formats and truncates", () => {
   const inline = redactText("token sk-abcdefghijklmnopqrstuvwxyz and ghp_abcdefghijklmnopqrstuvwxyz");
   assert.doesNotMatch(inline, /sk-|ghp_/);

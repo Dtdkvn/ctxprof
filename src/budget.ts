@@ -9,6 +9,7 @@ import type {
   ComponentKind,
 } from "./types.js";
 import type { NamedRun } from "./importer.js";
+import { isProfileRun } from "./store.js";
 
 const COMPONENT_KINDS: readonly ComponentKind[] = [
   "system",
@@ -22,22 +23,50 @@ const COMPONENT_KINDS: readonly ComponentKind[] = [
 export function metricsForRuns(runs: readonly NamedRun[]): Record<string, BudgetMetrics> {
   const cases = Object.create(null) as Record<string, BudgetMetrics>;
   for (const named of runs) {
+    if (!isProfileRun(named.run)) {
+      throw new Error(`Invalid ProfileRun â€œ${named.name}â€: metrics are not finite and internally consistent.`);
+    }
     let name = named.name;
     let suffix = 2;
     while (Object.hasOwn(cases, name)) name = `${named.name}#${suffix++}`;
     const components = emptyComponents();
-    for (const component of named.run.components) {
-      components[component.kind] += component.allocatedInputTokens;
+    if (!Array.isArray(named.run.components) || !Array.isArray(named.run.warnings)) {
+      throw new Error(`Invalid ProfileRun “${named.name}”: components and warnings must be arrays.`);
     }
+    for (const component of named.run.components) {
+      if (!COMPONENT_KINDS.includes(component.kind)) {
+        throw new Error(`Invalid ProfileRun “${named.name}”: unknown component kind.`);
+      }
+      components[component.kind] += requireRunMetric(
+        component.allocatedInputTokens,
+        named.name,
+        `components.${component.kind}`,
+      );
+    }
+    const inputTokens = requireRunMetric(
+      named.run.totals.providerInputTokens ?? named.run.totals.estimatedInputTokens,
+      named.name,
+      "inputTokens",
+    );
+    const totalTokens = requireRunMetric(named.run.totals.totalTokens, named.name, "totalTokens");
+    const estimatedCostUsd = named.run.totals.estimatedTotalCostUsd;
+    if (estimatedCostUsd !== null) requireRunMetric(estimatedCostUsd, named.name, "estimatedCostUsd");
     cases[name] = {
-      inputTokens: named.run.totals.providerInputTokens ?? named.run.totals.estimatedInputTokens,
-      totalTokens: named.run.totals.totalTokens,
+      inputTokens,
+      totalTokens,
       estimatedCostUsd: named.run.totals.estimatedTotalCostUsd,
       components,
       warnings: named.run.warnings.filter((warning) => warning.severity !== "info").length,
     };
   }
   return cases;
+}
+
+function requireRunMetric(value: unknown, caseName: string, metric: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`Invalid ProfileRun “${caseName}”: ${metric} must be a finite non-negative number.`);
+  }
+  return value;
 }
 
 export function evaluateBudget(

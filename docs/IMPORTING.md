@@ -38,7 +38,7 @@ The wrapper also accepts `endpoint`, `status`, and `duration_ms`.
 
 ## JSONL and Batch records
 
-Each non-empty JSONL line may be a raw request, wrapper, normalized `ProfileRun`, or OpenAI Batch-style request with `custom_id`, `url`, and `body`. Multi-record case names receive stable `#N` suffixes in budget output.
+Each non-empty JSONL line may be a raw request, wrapper, normalized `ProfileRun`, or OpenAI Batch-style request with `custom_id`, `url`, and `body`. Normalized runs are validated fail-closed: every metric must be finite, non-negative, and internally consistent. Multi-record case names receive stable `#N` suffixes in budget output.
 
 ## HAR
 

@@ -67,16 +67,15 @@ export async function importFile(filePath: string, options: ImportOptions = {}):
 
 function sanitizeImportedRun(run: ProfileRun, captureMode: "none" | "redacted"): ProfileRun {
   const redacted = redactValue(run);
-  const candidate = redacted.value as ProfileRun;
+  const candidate = canonicalRun(redacted.value as ProfileRun);
   if (captureMode === "none") {
     return {
       ...candidate,
+      components: candidate.components.map((component) => ({ ...component, preview: null })),
       exchange: { request: null, response: null, captureMode: "none", truncated: false },
     };
   }
-  const exchange = isRecord(candidate.exchange)
-    ? candidate.exchange as unknown as ProfileRun["exchange"]
-    : { request: null, response: null, captureMode: "redacted" as const, truncated: true };
+  const exchange = candidate.exchange;
   const serialized = stableStringify(exchange);
   if (Buffer.byteLength(serialized, "utf8") > 256 * 1024) {
     return {
@@ -123,6 +122,9 @@ function parseDocument(contents: string, extension: string): unknown[] {
 function extractRecords(value: unknown): Array<ExchangeRecord | ProfileRun> {
   if (isProfileRun(value)) return [value];
   if (!isRecord(value)) return [{ request: value, response: null }];
+  if (looksLikeProfileRun(value)) {
+    throw new Error("Invalid ProfileRun schema. Normalized runs must contain finite, internally consistent v1 fields.");
+  }
 
   if (isRecord(value.log) && Array.isArray(value.log.entries)) {
     return value.log.entries.flatMap(extractHarEntry);
@@ -159,6 +161,38 @@ function extractRecords(value: unknown): Array<ExchangeRecord | ProfileRun> {
     ];
   }
   return [{ request: value, response: null }];
+}
+
+function looksLikeProfileRun(value: Record<string, unknown>): boolean {
+  return value.schemaVersion === 1 &&
+    typeof value.id === "string" &&
+    (Array.isArray(value.components) || value.totals !== undefined);
+}
+
+function canonicalRun(run: ProfileRun): ProfileRun {
+  return {
+    schemaVersion: run.schemaVersion,
+    id: run.id,
+    capturedAt: run.capturedAt,
+    durationMs: run.durationMs,
+    endpoint: run.endpoint,
+    status: run.status,
+    model: run.model,
+    label: run.label,
+    promptVersion: run.promptVersion,
+    source: run.source,
+    tokenizer: { ...run.tokenizer },
+    pricing: run.pricing ? { ...run.pricing } : null,
+    components: run.components.map((component) => ({ ...component })),
+    totals: { ...run.totals },
+    warnings: run.warnings.map((warning) => ({ ...warning })),
+    exchange: {
+      request: run.exchange.request,
+      response: run.exchange.response,
+      captureMode: run.exchange.captureMode,
+      truncated: run.exchange.truncated,
+    },
+  };
 }
 
 function extractHarEntry(entry: unknown): ExchangeRecord[] {

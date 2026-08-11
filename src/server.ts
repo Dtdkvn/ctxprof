@@ -1,5 +1,15 @@
-import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isIP } from "node:net";
 import { performance } from "node:perf_hooks";
+import { brotliDecompress, gunzip, inflate } from "node:zlib";
 import { analyzeExchange } from "./analyzer.js";
 import { compareVersions } from "./compare.js";
 import { redactText, safeError } from "./redaction.js";
@@ -14,6 +24,8 @@ export interface ServerOptions {
   upstream?: string;
   apiKey?: string;
   allowRemote?: boolean;
+  allowedHosts?: readonly string[];
+  upstreamTimeoutMs?: number;
   captureMode?: "none" | "redacted";
   pricing?: PricingRecord[];
   defaultLabel?: string;
@@ -33,31 +45,69 @@ export interface RunningServer {
 const HOP_BY_HOP = new Set([
   "connection",
   "cookie",
-  "content-length",
-  "content-encoding",
   "host",
   "keep-alive",
   "proxy-authenticate",
   "proxy-authorization",
+  "proxy-connection",
   "te",
   "trailer",
   "transfer-encoding",
   "upgrade",
 ]);
 
+const PRIVATE_PROXY_HEADERS = new Set([
+  "cf-connecting-ip",
+  "cf-visitor",
+  "forwarded",
+  "origin",
+  "referer",
+  "true-client-ip",
+  "via",
+  "x-envoy-original-path",
+  "x-client-cert",
+  "x-ms-client-principal",
+  "x-original-url",
+  "x-original-uri",
+  "x-real-ip",
+]);
+const MAX_RESPONSE_CAPTURE_BYTES = 5 * 1024 * 1024;
+const MAX_DECOMPRESSED_CAPTURE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 120_000;
+
+type ResolvedServerOptions = ServerOptions & {
+  host: string;
+  port: number;
+  store: RunStore;
+  allowedHostnames: ReadonlySet<string>;
+  upstreamTimeoutMs: number;
+};
+
 export async function startServer(options: ServerOptions = {}): Promise<RunningServer> {
   const host = options.host ?? "127.0.0.1";
   const requestedPort = options.port ?? 8787;
+  const upstreamTimeoutMs = options.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
+  const allowedHostnames = new Set((options.allowedHosts ?? []).map(normalizeAllowedHostname));
   if (!isLoopback(host) && !options.allowRemote) {
     throw new Error(
       `Refusing to bind to ${host}. Ctxprof contains prompt data; pass --allow-remote only behind a trusted network boundary.`,
     );
   }
+  if (!Number.isSafeInteger(upstreamTimeoutMs) || upstreamTimeoutMs <= 0 || upstreamTimeoutMs > 2_147_483_647) {
+    throw new Error("upstreamTimeoutMs must be a positive integer no greater than 2147483647.");
+  }
   if (options.upstream) validateUpstream(options.upstream);
   const store = options.store ?? new RunStore();
   await store.init();
   const server = createServer((request, response) => {
-    void route(request, response, { ...options, host, port: requestedPort, store }).catch((error) => {
+    void route(request, response, {
+      ...options,
+      host,
+      port: requestedPort,
+      store,
+      allowedHostnames,
+      upstreamTimeoutMs,
+    }).catch((error) => {
       if (!response.headersSent) json(response, 500, { error: "Internal error", detail: safeError(error) });
       else {
         process.stderr.write(`ctxprof: ${safeError(error)}\n`);
@@ -74,7 +124,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   });
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : requestedPort;
-  const displayHost = host === "::1" ? "[::1]" : host;
+  const displayHost = isIP(host.replace(/^\[|\]$/g, "")) === 6 ? `[${host.replace(/^\[|\]$/g, "")}]` : host;
   return {
     server,
     host,
@@ -87,8 +137,13 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
 async function route(
   request: IncomingMessage,
   response: ServerResponse,
-  options: Required<Pick<ServerOptions, "host" | "port" | "store">> & ServerOptions,
+  options: ResolvedServerOptions,
 ): Promise<void> {
+  const boundaryError = requestBoundaryError(request, options);
+  if (boundaryError) {
+    json(response, 403, { error: boundaryError });
+    return;
+  }
   const requestUrl = new URL(request.url ?? "/", "http://ctxprof.local");
   if (request.method === "GET" && requestUrl.pathname === "/") {
     html(response, 200, renderDashboard([], { live: true, title: "Ctxprof · live context profile" }));
@@ -130,10 +185,19 @@ async function proxyRequest(
   request: IncomingMessage,
   response: ServerResponse,
   requestUrl: URL,
-  options: Required<Pick<ServerOptions, "store">> & ServerOptions,
+  options: ResolvedServerOptions,
 ): Promise<void> {
   if (request.method !== "POST") {
     json(response, 405, { error: "Ctxprof currently profiles JSON POST requests only." });
+    return;
+  }
+  if (!isJsonContentType(protocolHeaderValue(request.headers["content-type"]))) {
+    json(response, 415, { error: "Ctxprof proxy requests must use application/json or application/*+json." });
+    return;
+  }
+  const requestEncoding = protocolHeaderValue(request.headers["content-encoding"]);
+  if (requestEncoding && requestEncoding.toLowerCase() !== "identity") {
+    json(response, 415, { error: "Ctxprof does not accept compressed request bodies." });
     return;
   }
   let rawRequest: Buffer;
@@ -155,65 +219,92 @@ async function proxyRequest(
   }
   const started = performance.now();
   const upstreamUrl = makeUpstreamUrl(options.upstream ?? "", requestUrl);
-  const headers = forwardRequestHeaders(request.headers, options.apiKey);
+  const headers = forwardRequestHeaders(request.headers, options.apiKey, rawRequest.length);
   const label = headerValue(request.headers["x-ctxprof-label"]) ?? options.defaultLabel;
   const promptVersion =
     headerValue(request.headers["x-ctxprof-version"]) ?? options.defaultPromptVersion;
+  const controller = new AbortController();
+  let abortKind: "downstream" | "timeout" | null = null;
+  let downstreamFinished = false;
+  const abort = (kind: "downstream" | "timeout"): void => {
+    if (controller.signal.aborted) return;
+    abortKind = kind;
+    controller.abort(new Error(kind === "timeout" ? "Upstream request timed out." : "Downstream connection closed."));
+  };
+  const onRequestAborted = (): void => abort("downstream");
+  const onResponseFinish = (): void => { downstreamFinished = true; };
+  const onResponseClose = (): void => {
+    if (!downstreamFinished) abort("downstream");
+  };
+  request.once("aborted", onRequestAborted);
+  response.once("finish", onResponseFinish);
+  response.once("close", onResponseClose);
+  const timeout = setTimeout(() => abort("timeout"), options.upstreamTimeoutMs);
   try {
-    const upstreamResponse = await fetch(upstreamUrl, {
-      method: "POST",
-      headers,
-      body: rawRequest.toString("utf8"),
-      redirect: "manual",
-    });
+    const upstreamResponse = await openUpstream(upstreamUrl, headers, rawRequest, controller.signal);
+    const destroyUpstream = (): void => {
+      upstreamResponse.destroy(controller.signal.reason instanceof Error ? controller.signal.reason : undefined);
+    };
+    controller.signal.addEventListener("abort", destroyUpstream, { once: true });
+    const status = upstreamResponse.statusCode ?? 502;
     copyResponseHeaders(upstreamResponse.headers, response);
-    response.statusCode = upstreamResponse.status;
-    const chunks: Buffer[] = [];
-    let capturedBytes = 0;
-    const maxResponseCaptureBytes = 5 * 1024 * 1024;
-    if (upstreamResponse.body) {
-      const reader = upstreamResponse.body.getReader();
-      while (true) {
-        const part = await reader.read();
-        if (part.done) break;
-        const chunk = Buffer.from(part.value);
+    response.statusCode = status;
+    const capture = new BoundedResponseCapture(MAX_RESPONSE_CAPTURE_BYTES);
+    try {
+      for await (const rawChunk of upstreamResponse) {
+        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
         const writable = await writeWithBackpressure(response, chunk);
         if (!writable) {
-          await reader.cancel();
-          break;
+          abort("downstream");
+          throw controller.signal.reason;
         }
-        if (capturedBytes < maxResponseCaptureBytes) {
-          const remaining = maxResponseCaptureBytes - capturedBytes;
-          chunks.push(chunk.subarray(0, remaining));
-          capturedBytes += Math.min(chunk.length, remaining);
-        }
+        capture.add(chunk);
       }
+    } finally {
+      controller.signal.removeEventListener("abort", destroyUpstream);
     }
     if (!response.destroyed) response.end();
-    const capturedResponse = parseUpstreamPayload(
-      Buffer.concat(chunks).toString("utf8"),
-      upstreamResponse.headers.get("content-type") ?? "",
+    const capturedResponse = await parseCapturedPayload(
+      capture,
+      protocolHeaderValue(upstreamResponse.headers["content-type"]) ?? "",
+      protocolHeaderValue(upstreamResponse.headers["content-encoding"]) ?? "identity",
     );
-    await recordRunSafely(parsedRequest, capturedResponse, {
+    await recordRunSafely(parsedRequest, capturedResponse.value, {
       endpoint: requestUrl.pathname,
-      status: upstreamResponse.status,
+      status,
       durationMs: Math.round(performance.now() - started),
       label,
       promptVersion,
       options,
+      responseCapture: capturedResponse,
     });
   } catch (error) {
-    const detail = safeError(error);
-    if (!response.headersSent) json(response, 502, { error: "Upstream request failed", detail });
-    else response.end();
+    const downstreamAbort = abortKind === "downstream";
+    const status = abortKind === "timeout" ? 504 : downstreamAbort ? 499 : 502;
+    const detail = abortKind === "timeout" ? "Upstream request timed out." : safeError(error);
+    if (!downstreamAbort) {
+      if (!response.headersSent && !response.destroyed) {
+        json(response, status, {
+          error: status === 504 ? "Upstream request timed out" : "Upstream request failed",
+          detail,
+        });
+      } else if (!response.destroyed) {
+        response.destroy();
+      }
+    }
     await recordRunSafely(parsedRequest, { error: detail }, {
       endpoint: requestUrl.pathname,
-      status: 502,
+      status,
       durationMs: Math.round(performance.now() - started),
       label,
       promptVersion,
       options,
     });
+  } finally {
+    clearTimeout(timeout);
+    request.off("aborted", onRequestAborted);
+    response.off("finish", onResponseFinish);
+    response.off("close", onResponseClose);
   }
 }
 
@@ -224,6 +315,7 @@ interface RecordOptions {
   label: string | undefined;
   promptVersion: string | undefined;
   options: Required<Pick<ServerOptions, "store">> & ServerOptions;
+  responseCapture?: CapturedPayload;
 }
 
 async function recordRun(request: unknown, response: unknown, record: RecordOptions): Promise<void> {
@@ -237,6 +329,35 @@ async function recordRun(request: unknown, response: unknown, record: RecordOpti
     ...(record.label ? { label: record.label } : {}),
     ...(record.promptVersion ? { promptVersion: record.promptVersion } : {}),
   });
+  if (record.responseCapture?.truncated) {
+    run.exchange.truncated = true;
+    const usageRecovered = record.responseCapture.usageRecovered;
+    if (!usageRecovered) {
+      const fallbackOutputTokens = Math.max(
+        run.totals.outputTokens,
+        Math.max(1, Math.ceil(record.responseCapture.totalBytes / 4)),
+      );
+      run.totals.outputTokens = fallbackOutputTokens;
+      run.totals.totalTokens =
+        (run.totals.providerInputTokens ?? run.totals.estimatedInputTokens) + fallbackOutputTokens;
+      if (run.pricing) {
+        run.totals.estimatedOutputCostUsd = roundUsd(
+          (fallbackOutputTokens / 1_000_000) * run.pricing.outputPerMillionUsd,
+        );
+        run.totals.estimatedTotalCostUsd = run.totals.estimatedInputCostUsd === null
+          ? null
+          : roundUsd(run.totals.estimatedInputCostUsd + run.totals.estimatedOutputCostUsd);
+      }
+    }
+    run.warnings.push({
+      code: "truncated-response",
+      severity: "warning",
+      title: "Response capture is incomplete",
+      detail: usageRecovered
+        ? `Ctxprof retained the provider's final output usage, but only sampled a bounded first/last window from the ${formatBytes(record.responseCapture.totalBytes)} response.`
+        : `Provider usage was not recoverable. Output tokens use a byte-based fallback for the ${formatBytes(record.responseCapture.totalBytes)} response and must not be treated as an exact zero.`,
+    });
+  }
   await record.options.store.append(run);
   await record.options.onRun?.(run);
   if (!record.options.quiet) {
@@ -260,44 +381,7 @@ async function recordRunSafely(request: unknown, response: unknown, record: Reco
 function parseUpstreamPayload(value: string, contentType: string): unknown {
   if (!value) return null;
   if (contentType.includes("text/event-stream") || value.startsWith("data:")) {
-    const events: unknown[] = [];
-    for (const line of value.split(/\r?\n/)) {
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        events.push(JSON.parse(payload) as unknown);
-      } catch {
-        // Ignore incomplete final stream chunks.
-      }
-    }
-    const withUsage = [...events].reverse().find((event) => {
-      if (!isRecord(event)) return false;
-      return isRecord(event.usage) || (isRecord(event.response) && isRecord(event.response.usage));
-    });
-    if (withUsage && isRecord(withUsage)) {
-      const usage = isRecord(withUsage.usage)
-        ? withUsage.usage
-        : isRecord(withUsage.response) && isRecord(withUsage.response.usage)
-          ? withUsage.response.usage
-          : undefined;
-      const withModel = events.find((event) =>
-        isRecord(event) && (
-          typeof event.model === "string" ||
-          (isRecord(event.response) && typeof event.response.model === "string")
-        ));
-      const model = isRecord(withModel) && typeof withModel.model === "string"
-        ? withModel.model
-        : isRecord(withModel) && isRecord(withModel.response) && typeof withModel.response.model === "string"
-          ? withModel.response.model
-          : undefined;
-      return {
-        events,
-        usage,
-        ...(model ? { model } : {}),
-      };
-    }
-    return { events };
+    return summarizeStreamEvents(parseSseEvents(value), false);
   }
   try {
     return JSON.parse(value) as unknown;
@@ -306,25 +390,353 @@ function parseUpstreamPayload(value: string, contentType: string): unknown {
   }
 }
 
-function forwardRequestHeaders(headers: IncomingHttpHeaders, apiKey: string | undefined): Headers {
+interface CapturedPayload {
+  value: unknown;
+  truncated: boolean;
+  usageRecovered: boolean;
+  totalBytes: number;
+}
+
+class BoundedResponseCapture {
+  readonly limit: number;
+  readonly headLimit: number;
+  readonly tailLimit: number;
+  totalBytes = 0;
+  private headBytes = 0;
+  private tailBytes = 0;
+  private readonly headChunks: Buffer[] = [];
+  private readonly tailChunks: Buffer[] = [];
+  private fullChunks: Buffer[] | null = [];
+
+  constructor(limit: number) {
+    this.limit = limit;
+    this.headLimit = Math.floor(limit / 2);
+    this.tailLimit = limit - this.headLimit;
+  }
+
+  add(chunk: Buffer): void {
+    this.totalBytes += chunk.length;
+    if (this.fullChunks) {
+      if (this.totalBytes <= this.limit) this.fullChunks.push(chunk);
+      else this.fullChunks = null;
+    }
+    if (this.headBytes < this.headLimit) {
+      const length = Math.min(chunk.length, this.headLimit - this.headBytes);
+      this.headChunks.push(Buffer.from(chunk.subarray(0, length)));
+      this.headBytes += length;
+    }
+    this.tailChunks.push(Buffer.from(chunk));
+    this.tailBytes += chunk.length;
+    while (this.tailBytes > this.tailLimit) {
+      const first = this.tailChunks[0];
+      if (!first) break;
+      const excess = this.tailBytes - this.tailLimit;
+      if (first.length <= excess) {
+        this.tailChunks.shift();
+        this.tailBytes -= first.length;
+      } else {
+        this.tailChunks[0] = Buffer.from(first.subarray(excess));
+        this.tailBytes -= excess;
+      }
+    }
+  }
+
+  get truncated(): boolean {
+    return this.totalBytes > this.limit;
+  }
+
+  full(): Buffer | null {
+    return this.fullChunks ? Buffer.concat(this.fullChunks, this.totalBytes) : null;
+  }
+
+  head(): Buffer {
+    return Buffer.concat(this.headChunks, this.headBytes);
+  }
+
+  tail(): Buffer {
+    return Buffer.concat(this.tailChunks, this.tailBytes);
+  }
+}
+
+async function parseCapturedPayload(
+  capture: BoundedResponseCapture,
+  contentType: string,
+  contentEncoding: string,
+): Promise<CapturedPayload> {
+  const normalizedEncoding = contentEncoding.trim().toLowerCase();
+  const full = capture.full();
+  if (full) {
+    const decoded = await decodeCapturedBody(full, normalizedEncoding);
+    if (decoded) {
+      const value = parseUpstreamPayload(decoded.toString("utf8"), contentType);
+      return {
+        value,
+        truncated: false,
+        usageRecovered: hasProviderUsage(value),
+        totalBytes: capture.totalBytes,
+      };
+    }
+    return {
+      value: { capture_truncated: true, content_encoding: safeHeaderField(normalizedEncoding) },
+      truncated: true,
+      usageRecovered: false,
+      totalBytes: capture.totalBytes,
+    };
+  }
+
+  if (normalizedEncoding && normalizedEncoding !== "identity") {
+    return {
+      value: { capture_truncated: true, content_encoding: safeHeaderField(normalizedEncoding) },
+      truncated: true,
+      usageRecovered: false,
+      totalBytes: capture.totalBytes,
+    };
+  }
+
+  const head = capture.head().toString("utf8");
+  const tailBuffer = capture.tail();
+  const tail = tailBuffer.toString("utf8");
+  let value: unknown;
+  if (contentType.includes("text/event-stream") || head.startsWith("data:")) {
+    value = summarizeStreamEvents(
+      [...parseSseEvents(head), ...parseSseEvents(tail)],
+      true,
+    );
+  } else {
+    const usage = extractLastJsonObjectProperty(tail, "usage");
+    const model = extractJsonStringProperty(head, "model") ?? extractJsonStringProperty(tail, "model");
+    value = {
+      capture_truncated: true,
+      ...(usage ? { usage } : {}),
+      ...(model ? { model } : {}),
+    };
+  }
+  return {
+    value,
+    truncated: true,
+    usageRecovered: hasProviderUsage(value),
+    totalBytes: capture.totalBytes,
+  };
+}
+
+function parseSseEvents(value: string): unknown[] {
+  const events: unknown[] = [];
+  for (const line of value.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]" || payload.length > MAX_RESPONSE_CAPTURE_BYTES) continue;
+    try {
+      events.push(JSON.parse(payload) as unknown);
+    } catch {
+      // A bounded head/tail sample can end inside an event. The final usage
+      // event is parsed independently from the retained tail.
+    }
+  }
+  return events;
+}
+
+function summarizeStreamEvents(events: unknown[], truncated: boolean): unknown {
+  const withUsage = [...events].reverse().find((event) => {
+    if (!isRecord(event)) return false;
+    return isRecord(event.usage) || (isRecord(event.response) && isRecord(event.response.usage));
+  });
+  const usage = isRecord(withUsage) && isRecord(withUsage.usage)
+    ? withUsage.usage
+    : isRecord(withUsage) && isRecord(withUsage.response) && isRecord(withUsage.response.usage)
+      ? withUsage.response.usage
+      : undefined;
+  const withModel = events.find((event) =>
+    isRecord(event) && (
+      typeof event.model === "string" ||
+      (isRecord(event.response) && typeof event.response.model === "string")
+    ));
+  const model = isRecord(withModel) && typeof withModel.model === "string"
+    ? withModel.model
+    : isRecord(withModel) && isRecord(withModel.response) && typeof withModel.response.model === "string"
+      ? withModel.response.model
+      : undefined;
+  return {
+    events,
+    ...(usage ? { usage } : {}),
+    ...(model ? { model } : {}),
+    ...(truncated ? { capture_truncated: true } : {}),
+  };
+}
+
+function hasProviderUsage(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const usage = isRecord(value.usage)
+    ? value.usage
+    : isRecord(value.response) && isRecord(value.response.usage)
+      ? value.response.usage
+      : null;
+  if (!usage) return false;
+  return ["completion_tokens", "output_tokens"].some(
+    (key) => typeof usage[key] === "number" && Number.isFinite(usage[key]) && Number(usage[key]) >= 0,
+  );
+}
+
+function extractLastJsonObjectProperty(value: string, property: string): Record<string, unknown> | null {
+  const needle = `"${property}"`;
+  let index = value.lastIndexOf(needle);
+  while (index >= 0) {
+    if (!isEscaped(value, index)) {
+      let cursor = index + needle.length;
+      while (/\s/.test(value[cursor] ?? "")) cursor += 1;
+      if (value[cursor] === ":") {
+        cursor += 1;
+        while (/\s/.test(value[cursor] ?? "")) cursor += 1;
+        if (value[cursor] === "{") {
+          const end = findJsonObjectEnd(value, cursor);
+          if (end >= 0) {
+            try {
+              const parsed = JSON.parse(value.slice(cursor, end + 1)) as unknown;
+              if (isRecord(parsed)) return parsed;
+            } catch {
+              // Continue searching an earlier property occurrence.
+            }
+          }
+        }
+      }
+    }
+    index = value.lastIndexOf(needle, index - 1);
+  }
+  return null;
+}
+
+function findJsonObjectEnd(value: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") inString = false;
+      continue;
+    }
+    if (character === "\"") inString = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}" && --depth === 0) return index;
+  }
+  return -1;
+}
+
+function extractJsonStringProperty(value: string, property: string): string | undefined {
+  const pattern = new RegExp(`"${property}"\\s*:\\s*("(?:\\\\.|[^"\\\\])*")`, "g");
+  const match = pattern.exec(value);
+  if (!match?.[1]) return undefined;
+  try {
+    const parsed = JSON.parse(match[1]) as unknown;
+    return typeof parsed === "string" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isEscaped(value: string, index: number): boolean {
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) slashes += 1;
+  return slashes % 2 === 1;
+}
+
+async function decodeCapturedBody(value: Buffer, contentEncoding: string): Promise<Buffer | null> {
+  const encodings = contentEncoding.split(",").map((entry) => entry.trim()).filter(Boolean);
+  let decoded = value;
+  try {
+    for (const encoding of encodings.reverse()) {
+      if (encoding === "identity") continue;
+      decoded = await decompressOnce(decoded, encoding);
+    }
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+function decompressOnce(value: Buffer, encoding: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const callback = (error: Error | null, result: Buffer): void => error ? reject(error) : resolve(result);
+    const options = { maxOutputLength: MAX_DECOMPRESSED_CAPTURE_BYTES };
+    if (encoding === "gzip" || encoding === "x-gzip") gunzip(value, options, callback);
+    else if (encoding === "deflate") inflate(value, options, callback);
+    else if (encoding === "br") brotliDecompress(value, options, callback);
+    else reject(new Error(`Unsupported content encoding: ${encoding}`));
+  });
+}
+
+function forwardRequestHeaders(
+  headers: IncomingHttpHeaders,
+  apiKey: string | undefined,
+  contentLength: number,
+): Headers {
   const outgoing = new Headers();
+  const connectionHeaders = new Set(
+    (protocolHeaderValue(headers.connection) ?? "").split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean),
+  );
   for (const [name, rawValue] of Object.entries(headers)) {
     const lower = name.toLowerCase();
-    if (HOP_BY_HOP.has(lower) || lower.startsWith("x-ctxprof-")) continue;
+    if (
+      HOP_BY_HOP.has(lower) ||
+      connectionHeaders.has(lower) ||
+      lower.startsWith("x-ctxprof-") ||
+      isPrivateProxyHeader(lower) ||
+      lower === "accept-encoding" ||
+      lower === "content-encoding" ||
+      lower === "content-length"
+    ) continue;
     if (rawValue !== undefined) outgoing.set(name, Array.isArray(rawValue) ? rawValue.join(", ") : rawValue);
   }
   if (!outgoing.has("authorization") && apiKey) outgoing.set("authorization", `Bearer ${apiKey}`);
   outgoing.set("content-type", outgoing.get("content-type") ?? "application/json");
+  outgoing.set("content-length", String(contentLength));
+  outgoing.set("accept-encoding", "identity");
   return outgoing;
 }
 
-function copyResponseHeaders(headers: Headers, response: ServerResponse): void {
-  for (const [name, value] of headers.entries()) {
-    if (!HOP_BY_HOP.has(name.toLowerCase()) && name.toLowerCase() !== "set-cookie") {
+function isPrivateProxyHeader(lower: string): boolean {
+  return PRIVATE_PROXY_HEADERS.has(lower) ||
+    lower.startsWith("cf-access-") ||
+    lower.startsWith("x-amzn-oidc-") ||
+    lower.startsWith("x-auth-request-") ||
+    lower.startsWith("x-envoy-") ||
+    lower.startsWith("x-forwarded-") ||
+    lower.startsWith("x-goog-authenticated-user-") ||
+    lower === "x-goog-iap-jwt-assertion" ||
+    lower.startsWith("x-ms-client-principal-") ||
+    lower.startsWith("x-ms-token-") ||
+    lower.startsWith("sec-");
+}
+
+function copyResponseHeaders(headers: IncomingHttpHeaders, response: ServerResponse): void {
+  const connectionHeaders = new Set(
+    (protocolHeaderValue(headers.connection) ?? "").split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean),
+  );
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = name.toLowerCase();
+    if (
+      !HOP_BY_HOP.has(lower) &&
+      !connectionHeaders.has(lower) &&
+      lower !== "set-cookie" &&
+      value !== undefined
+    ) {
       response.setHeader(name, value);
     }
   }
   response.setHeader("x-ctxprof-proxy", "1");
+}
+
+function openUpstream(url: URL, headers: Headers, body: Buffer, signal: AbortSignal): Promise<IncomingMessage> {
+  return new Promise((resolve, reject) => {
+    const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, {
+      method: "POST",
+      headers: Object.fromEntries(headers.entries()),
+      signal,
+    }, resolve);
+    request.once("error", reject);
+    request.end(body);
+  });
 }
 
 async function readBody(request: IncomingMessage, maxBytes: number): Promise<Buffer> {
@@ -387,13 +799,132 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body));
 }
 
+function requestBoundaryError(request: IncomingMessage, options: ResolvedServerOptions): string | null {
+  const hostHeader = protocolHeaderValue(request.headers.host);
+  if (!hostHeader) return "A valid Host header is required.";
+  const requestHostname = hostnameFromAuthority(hostHeader);
+  if (!requestHostname) return "The Host header is invalid.";
+  if (!isAllowedRequestHostname(requestHostname, request, options)) {
+    return isLoopback(options.host)
+      ? "Loopback mode only accepts localhost or explicitly allowed Host headers."
+      : "The Host header is not allowed. Use allowedHosts for an exact reverse-proxy hostname.";
+  }
+
+  const originHeader = protocolHeaderValue(request.headers.origin);
+  if (!originHeader) return null;
+  let origin: URL;
+  try {
+    origin = new URL(originHeader);
+  } catch {
+    return "The Origin header is invalid.";
+  }
+  if (
+    (origin.protocol !== "http:" && origin.protocol !== "https:") ||
+    origin.username ||
+    origin.password ||
+    (origin.pathname !== "/" && origin.pathname !== "") ||
+    origin.search ||
+    origin.hash
+  ) {
+    return "The Origin header is invalid.";
+  }
+  const requestAuthority = normalizedAuthority(hostHeader, origin.protocol);
+  if (!requestAuthority || requestAuthority !== origin.host.toLowerCase()) {
+    return "Cross-origin browser requests are not allowed.";
+  }
+  return null;
+}
+
+function isAllowedRequestHostname(
+  requestHostname: string,
+  request: IncomingMessage,
+  options: ResolvedServerOptions,
+): boolean {
+  if (isLoopback(requestHostname) || options.allowedHostnames.has(requestHostname)) return true;
+  if (isLoopback(options.host)) return false;
+  const localAddress = request.socket.localAddress?.replace(/^\[|\]$/g, "").toLowerCase();
+  if (localAddress && requestHostname === localAddress) return true;
+  const boundHostname = options.host.replace(/^\[|\]$/g, "").toLowerCase();
+  return !isWildcardBind(boundHostname) && requestHostname === boundHostname;
+}
+
+function normalizeAllowedHostname(value: string): string {
+  const trimmed = value.trim();
+  const hasExplicitPort = trimmed.startsWith("[")
+    ? !trimmed.endsWith("]")
+    : trimmed.includes(":");
+  if (
+    !trimmed ||
+    hasExplicitPort ||
+    trimmed.includes("*") ||
+    trimmed.includes(",") ||
+    /[\s/@]/.test(trimmed)
+  ) {
+    throw new Error("allowedHosts entries must be exact hostnames without a scheme, port, path, or wildcard.");
+  }
+  try {
+    const parsed = new URL(`http://${trimmed}`);
+    if (
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) throw new Error("invalid");
+    return parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  } catch {
+    throw new Error("allowedHosts entries must be exact hostnames without a scheme, port, path, or wildcard.");
+  }
+}
+
+function isWildcardBind(host: string): boolean {
+  return host === "0.0.0.0" || host === "::";
+}
+
+function hostnameFromAuthority(authority: string): string | null {
+  if (authority.includes(",") || /[\s/@]/.test(authority)) return null;
+  try {
+    const parsed = new URL(`http://${authority}`);
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return null;
+    return parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function normalizedAuthority(authority: string, protocol: string): string | null {
+  if (authority.includes(",") || /[\s/@]/.test(authority)) return null;
+  try {
+    const parsed = new URL(`${protocol}//${authority}`);
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return null;
+    return parsed.host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isJsonContentType(value: string | undefined): boolean {
+  if (!value) return false;
+  const mediaType = value.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return mediaType === "application/json" ||
+    (mediaType.startsWith("application/") && mediaType.endsWith("+json"));
+}
+
 function isLoopback(host: string): boolean {
-  return host === "127.0.0.1" || host === "::1" || host.toLowerCase() === "localhost";
+  const normalized = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (normalized === "localhost" || normalized === "::1") return true;
+  if (isIP(normalized) === 4) return normalized.split(".")[0] === "127";
+  return normalized.startsWith("::ffff:127.");
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {
-  const selected = Array.isArray(value) ? value[0] : value;
-  return selected && selected.trim() ? selected.trim().slice(0, 120) : undefined;
+  return protocolHeaderValue(value)?.slice(0, 120);
+}
+
+function protocolHeaderValue(value: string | string[] | undefined): string | undefined {
+  const selected = Array.isArray(value) ? value.join(", ") : value;
+  return selected && selected.trim() ? selected.trim() : undefined;
 }
 
 function clampInteger(value: string | null, min: number, max: number, fallback: number): number {
@@ -403,6 +934,20 @@ function clampInteger(value: string | null, min: number, max: number, fallback: 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeHeaderField(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 120);
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} bytes`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function roundUsd(value: number): number {
+  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
 function validateUpstream(value: string): void {

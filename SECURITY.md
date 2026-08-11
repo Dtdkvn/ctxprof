@@ -17,11 +17,11 @@ Maintainers should acknowledge a complete report within three business days, pro
 ### What Ctxprof protects
 
 - The default server binds to loopback and rejects a non-loopback bind without `--allow-remote`.
-- Headers are used only for forwarding. They are never included in a `ProfileRun`.
+- Ordinary headers are used only for forwarding and are never included in a `ProfileRun`. The explicit `x-ctxprof-label` and `x-ctxprof-version` values are converted to bounded, redacted run metadata and are not forwarded.
 - `Authorization` and `OPENAI_API_KEY` values are never printed.
 - Stored exchange bodies pass through recursive key-based and pattern-based secret redaction.
 - Stored strings and full exchanges have bounds; a body over the capture limit is replaced by a one-way content hash and notice.
-- `--capture none` omits both request and response bodies while keeping component metrics, short hashes, and optional previews. Add `--capture none` and set preview length to zero through the library API when even snippets are unacceptable.
+- `--capture none` omits request/response bodies and all component previews while keeping component metrics and short hashes.
 - Store files use owner-only POSIX modes where the filesystem supports them.
 - The browser UI has no third-party scripts, styles, fonts, analytics, or telemetry.
 - The live server sends a restrictive Content Security Policy, `nosniff`, and no-referrer headers. Static reports embed an equivalent CSP meta policy and disable network connections.
@@ -45,14 +45,16 @@ Maintainers should acknowledge a complete report within three business days, pro
 4. Store `.ctxprof/` on an encrypted local disk and exclude it from Git, backups, crash uploads, and support bundles unless explicitly approved.
 5. Review exported HTML before sharing it.
 6. Use a dedicated, least-privilege upstream API key and normal provider spend limits.
-7. If team access is necessary, put Ctxprof behind an authenticated reverse proxy on a trusted network; do not expose it directly to the internet.
+7. If team access is necessary, put Ctxprof behind an authenticated reverse proxy on a trusted network and use `--allow-remote --allowed-host ctxprof.example`; do not expose it directly to the internet. Each repeatable allowed-host value is an exact hostname without a scheme, port, path, or wildcard.
 8. Keep Node.js and Ctxprof patched. Pin release tags or package-lock integrity in automation.
 
 ## Proxy behavior
 
-The proxy accepts JSON POSTs below `/v1/`, forwards ordinary request headers except hop-by-hop and `x-ctxprof-*` headers, and strips upstream `Set-Cookie` from the response. It does not log query strings or bodies. The configured upstream origin is printed without credentials.
+Every request must use an allowed Host; wildcard remote binds accept only literal local/socket IPs and localhost unless an exact `--allowed-host` is configured. Browser requests with an Origin must also be same-origin. These checks reduce DNS-rebinding exposure but do not add authentication.
 
-Redirects are not followed. TLS validation is delegated to Node's standard `fetch` implementation. Do not disable TLS verification in production.
+The proxy accepts JSON POSTs below `/v1/`, forwards an intentionally filtered set of ordinary request headers, removes proxy-identity and `x-ctxprof-*` headers, and strips upstream `Set-Cookie` from the response. It does not log query strings or bodies. The configured upstream origin is printed without credentials. The upstream deadline defaults to 120 seconds and is configurable with `--upstream-timeout-ms` or `CTXPROF_UPSTREAM_TIMEOUT_MS`.
+
+Redirects are not followed. TLS validation is delegated to Node's standard HTTPS client. Do not disable TLS verification in production.
 
 ## Redaction details
 
@@ -62,4 +64,6 @@ Redaction happens before persistence, but profiling necessarily sees the origina
 
 ## Dependency and build posture
 
-Production code has zero third-party runtime packages. Releases still depend on the Node runtime, the package registry, GitHub Actions, and the development compiler. `package-lock.json`, Dependabot, CI on two Node LTS lines, `npm pack --dry-run`, and a multi-stage container build reduce but do not eliminate supply-chain risk.
+Production code has zero third-party runtime packages and requires a maintained Node.js 22+ release. Releases still depend on the Node runtime, the package registry, GitHub Actions, and the development compiler. Lockfile integrity, SHA-pinned Actions, trusted npm publishing, CI on Node 22/24, installed-tarball smoke tests, and a digest-pinned multi-stage container build reduce but do not eliminate supply-chain risk.
+
+Networks with a TLS-inspecting corporate proxy can pass its trusted PEM bundle to BuildKit without baking it into the image: `docker build --secret id=ctxprof_ca,src=/path/to/ca.pem .`. `NODE_EXTRA_CA_CERTS` extends Node's public trust roots for that build step; Ctxprof never requires disabling npm TLS verification.

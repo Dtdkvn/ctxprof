@@ -3,6 +3,7 @@
 .ctxprof*
 .test-dist
 dist
+action-dist
 node_modules
 coverage
 docs

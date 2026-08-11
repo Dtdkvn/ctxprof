@@ -15,7 +15,8 @@ export type WarningCode =
   | "duplicate-context"
   | "context-pressure"
   | "unknown-pricing"
-  | "large-tool-schema";
+  | "large-tool-schema"
+  | "truncated-response";
 
 export interface ContextComponent {
   id: string;

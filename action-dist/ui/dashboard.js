@@ -1,20 +1,9 @@
-import type { ProfileRun } from "../types.js";
-
-export interface DashboardOptions {
-  live?: boolean;
-  title?: string;
-  generatedAt?: string;
-}
-
-export function renderDashboard(
-  runs: readonly ProfileRun[],
-  options: DashboardOptions = {},
-): string {
-  const data = JSON.stringify(runs).replace(/</g, "\\u003c").replace(/-->/g, "--\\u003e");
-  const live = options.live ?? false;
-  const title = escapeHtml(options.title ?? "Ctxprof report");
-  const generatedAt = escapeHtml(options.generatedAt ?? new Date().toISOString());
-  return `<!doctype html>
+export function renderDashboard(runs, options = {}) {
+    const data = JSON.stringify(runs).replace(/</g, "\\u003c").replace(/-->/g, "--\\u003e");
+    const live = options.live ?? false;
+    const title = escapeHtml(options.title ?? "Ctxprof report");
+    const generatedAt = escapeHtml(options.generatedAt ?? new Date().toISOString());
+    return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -75,16 +64,16 @@ export function renderDashboard(
 </body>
 </html>`;
 }
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => {
-    const entities: Record<string, string> = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    };
-    return entities[character] ?? character;
-  });
+function escapeHtml(value) {
+    return value.replace(/[&<>"']/g, (character) => {
+        const entities = {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+        };
+        return entities[character] ?? character;
+    });
 }
+//# sourceMappingURL=dashboard.js.map
