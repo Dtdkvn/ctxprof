@@ -24,7 +24,7 @@ export function metricsForRuns(runs: readonly NamedRun[]): Record<string, Budget
   const cases = Object.create(null) as Record<string, BudgetMetrics>;
   for (const named of runs) {
     if (!isProfileRun(named.run)) {
-      throw new Error(`Invalid ProfileRun â€œ${named.name}â€: metrics are not finite and internally consistent.`);
+      throw new Error(`Invalid ProfileRun “${named.name}”: metrics are not finite and internally consistent.`);
     }
     const name = named.name;
     if (Object.hasOwn(cases, name)) {

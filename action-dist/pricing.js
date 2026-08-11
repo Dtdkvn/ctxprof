@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 const OPENAI_MODELS_URL = "https://developers.openai.com/api/docs/models";
+export const MAX_PRICING_RATE_USD_PER_MILLION = 1_000_000_000;
 // Standard text-token prices. Cached input, batch, priority processing, tools,
 // audio, images, data residency, and long-context multipliers are deliberately
 // excluded: applying them without full billing metadata would imply false accuracy.
@@ -136,10 +137,16 @@ function validatePricing(value, index) {
     if (typeof model !== "string" || model.length === 0 || model.length > 200) {
         throw new Error(`Pricing record ${index} has no model.`);
     }
-    if (typeof input !== "number" || input < 0 || !Number.isFinite(input)) {
+    if (typeof input !== "number" ||
+        input < 0 ||
+        !Number.isFinite(input) ||
+        input > MAX_PRICING_RATE_USD_PER_MILLION) {
         throw new Error(`Pricing record ${index} has an invalid input price.`);
     }
-    if (typeof output !== "number" || output < 0 || !Number.isFinite(output)) {
+    if (typeof output !== "number" ||
+        output < 0 ||
+        !Number.isFinite(output) ||
+        output > MAX_PRICING_RATE_USD_PER_MILLION) {
         throw new Error(`Pricing record ${index} has an invalid output price.`);
     }
     const contextWindow = candidate.contextWindow;

@@ -6,7 +6,7 @@ Ctxprof is local-first, not zero-knowledge. It must read a prompt to profile it.
 
 ### `redacted` (default)
 
-The normalized component profile, short redacted previews, and a redacted/capped request-response exchange are stored. This is convenient for local debugging and the interactive detail panel.
+The normalized component profile, short redacted previews, and a redacted/capped request-response exchange are stored. The live dashboard polls summary projections and fetches component detail for only the selected run; the stored exchange is not sent to the browser.
 
 Use it only when storing a sanitized version of the traffic on the machine is acceptable.
 

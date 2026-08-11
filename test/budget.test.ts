@@ -114,8 +114,26 @@ test("fails closed when a library caller supplies non-finite run metrics", () =>
   };
   assert.throws(
     () => metricsForRuns([malformed as never]),
-    /not finite and internally consistent/,
+    /Invalid ProfileRun “forged\.json”: metrics are not finite and internally consistent/,
   );
+});
+
+test("keeps aggregated high-cardinality tools inside the tools budget", () => {
+  const run = analyzeExchange(
+    {
+      model: "custom",
+      messages: [{ role: "user", content: "small" }],
+      tools: Array.from({ length: 20_000 }, () => null),
+    },
+    null,
+    { captureMode: "none" },
+  );
+  const cases = metricsForRuns([{ name: "many-tools", run }]);
+  assert.equal(cases["many-tools"]?.components.tools, 100_000);
+  assert.equal(cases["many-tools"]?.components.other, 0);
+  const result = evaluateBudget(cases, { limits: { components: { tools: 5_000 } } }, null);
+  assert.equal(result.passed, false);
+  assert.ok(result.violations.some((violation) => violation.metric === "components.tools"));
 });
 
 test("rejects forged normalized costs before a budget can treat them as zero", async (context) => {

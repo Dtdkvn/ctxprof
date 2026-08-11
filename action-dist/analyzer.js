@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { MAX_PROFILE_COMPONENTS, MAX_PROFILE_RUN_BYTES, MAX_PROFILE_WARNINGS } from "./limits.js";
 import { contentHash, redactText, redactValue } from "./redaction.js";
 import { findPricing } from "./pricing.js";
@@ -12,6 +12,15 @@ const COMPONENT_COLORS = {
     tool_result: "tool_result",
     other: "other",
 };
+const COMPONENT_KINDS = [
+    "system",
+    "developer",
+    "tools",
+    "message",
+    "tool_result",
+    "other",
+];
+const MAX_DETAILED_COMPONENTS = MAX_PROFILE_COMPONENTS - COMPONENT_KINDS.length;
 export function analyzeExchange(request, response = null, options = {}) {
     const requestRecord = isRecord(request) ? request : { input: request };
     const responseRecord = isRecord(response) ? response : null;
@@ -19,10 +28,11 @@ export function analyzeExchange(request, response = null, options = {}) {
     const endpoint = safeEndpoint(options.endpoint ?? inferEndpoint(requestRecord));
     const promptVersion = safeField(firstString(options.promptVersion, readMetadata(requestRecord, "prompt_version"), requestRecord.prompt_version, "unversioned"), 160);
     const label = safeField(firstString(options.label, readMetadata(requestRecord, "label"), requestRecord.label, promptVersion), 200);
-    const drafts = extractComponents(requestRecord);
+    const extracted = extractComponents(requestRecord);
+    const drafts = extracted.drafts;
     const providerUsage = extractUsage(responseRecord);
     const pricing = findPricing(model, options.pricing ?? []);
-    const rawEstimates = drafts.map((draft) => Math.max(1, estimateTokens(draft.text) + (draft.overheadTokens ?? 0)));
+    const rawEstimates = drafts.map((draft) => draft.estimatedTokens);
     const estimatedInputTokens = rawEstimates.reduce((sum, tokens) => sum + tokens, 0);
     const allocated = allocateTokens(rawEstimates, providerUsage.inputTokens ?? estimatedInputTokens);
     const captureMode = options.captureMode ?? "redacted";
@@ -34,22 +44,24 @@ export function analyzeExchange(request, response = null, options = {}) {
         const allocatedInputTokens = allocated[index] ?? estimatedTokens;
         // Redact the structured source before serializing it. Redacting `draft.text`
         // alone loses sensitive key names such as `api_key` embedded in JSON.
-        const redacted = redactValue(draft.previewSource, { maxStringChars: previewChars });
+        const redacted = draft.aggregateCount
+            ? { value: null }
+            : redactValue(draft.previewSource, { maxStringChars: previewChars });
         const previewValue = typeof redacted.value === "string" ? redacted.value : stableStringify(redacted.value);
         const safeLabel = safeField(draft.label, 240);
         return {
-            id: `${COMPONENT_COLORS[draft.kind]}-${index + 1}-${contentHash(draft.text)}`,
+            id: `${COMPONENT_COLORS[draft.kind]}-${index + 1}-${draft.contentHash}`,
             kind: draft.kind,
             label: safeLabel,
             estimatedTokens,
             allocatedInputTokens,
-            bytes: Buffer.byteLength(draft.text, "utf8"),
+            bytes: draft.bytes,
             share: estimatedInputTokens === 0 ? 0 : estimatedTokens / estimatedInputTokens,
             estimatedCostUsd: pricing
                 ? roundUsd((allocatedInputTokens / 1_000_000) * pricing.inputPerMillionUsd)
                 : null,
-            contentHash: contentHash(draft.text),
-            preview: previewChars === 0 ? null : previewValue.slice(0, previewChars),
+            contentHash: draft.contentHash,
+            preview: previewChars === 0 || draft.aggregateCount ? null : previewValue.slice(0, previewChars),
         };
     });
     const outputTokens = providerUsage.outputTokens ?? estimateResponseTokens(responseRecord);
@@ -64,7 +76,10 @@ export function analyzeExchange(request, response = null, options = {}) {
     const rawWarnings = buildWarnings(requestRecord, responseRecord, detailedComponents, pricing, providerUsage.invalid);
     const estimatedWasteTokens = estimateUniqueWaste(rawWarnings);
     const truncationReasons = [];
-    const components = boundComponents(detailedComponents, pricing, truncationReasons);
+    const components = detailedComponents;
+    if (extracted.aggregateCount > 0) {
+        truncationReasons.push(`${extracted.aggregateCount.toLocaleString("en-US")} components were combined into per-kind aggregates while token, byte, cost, and content-hash evidence was retained.`);
+    }
     if (rawWarnings.length > MAX_PROFILE_WARNINGS) {
         truncationReasons.push(`${rawWarnings.length - (MAX_PROFILE_WARNINGS - 1)} additional warning signals were omitted.`);
     }
@@ -102,34 +117,6 @@ export function analyzeExchange(request, response = null, options = {}) {
         exchange: captured,
     };
     return enforceProfileRunSize(run, request, truncationReasons);
-}
-function boundComponents(components, pricing, truncationReasons) {
-    if (components.length <= MAX_PROFILE_COMPONENTS)
-        return [...components];
-    const keepCount = MAX_PROFILE_COMPONENTS - 1;
-    const kept = components.slice(0, keepCount);
-    const omitted = components.slice(keepCount);
-    const estimatedTokens = omitted.reduce((sum, component) => sum + component.estimatedTokens, 0);
-    const allocatedInputTokens = omitted.reduce((sum, component) => sum + component.allocatedInputTokens, 0);
-    const bytes = omitted.reduce((sum, component) => sum + component.bytes, 0);
-    const aggregateHash = contentHash(omitted.map((component) => `${component.kind}:${component.contentHash}`).join("|"));
-    const keptShare = kept.reduce((sum, component) => sum + component.share, 0);
-    kept.push({
-        id: `other-aggregate-${aggregateHash}`,
-        kind: "other",
-        label: `${omitted.length.toLocaleString("en-US")} additional components (aggregated)`,
-        estimatedTokens,
-        allocatedInputTokens,
-        bytes,
-        share: Math.max(0, 1 - keptShare),
-        estimatedCostUsd: pricing
-            ? roundUsd((allocatedInputTokens / 1_000_000) * pricing.inputPerMillionUsd)
-            : null,
-        contentHash: aggregateHash,
-        preview: null,
-    });
-    truncationReasons.push(`${omitted.length.toLocaleString("en-US")} components were combined into one aggregate while token, byte, cost, and content-hash evidence was retained.`);
-    return kept;
 }
 function boundWarnings(warnings, truncationReasons) {
     const ordinary = warnings.filter((warning) => warning.code !== "analysis-truncated");
@@ -174,9 +161,12 @@ function profileRunBytes(run) {
     return Buffer.byteLength(JSON.stringify(run), "utf8");
 }
 function extractComponents(request) {
-    const result = [];
+    const accumulator = {
+        drafts: [],
+        aggregates: new Map(),
+    };
     if (typeof request.instructions === "string" && request.instructions.length > 0) {
-        result.push({
+        addDraft(accumulator, {
             kind: "system",
             label: "Responses instructions",
             text: request.instructions,
@@ -193,7 +183,7 @@ function extractComponents(request) {
                 : [];
     for (const [index, rawMessage] of messages.entries()) {
         if (!isRecord(rawMessage)) {
-            result.push({
+            addDraft(accumulator, {
                 kind: "message",
                 label: `Input ${index + 1}`,
                 text: stableStringify(rawMessage),
@@ -206,7 +196,7 @@ function extractComponents(request) {
         const type = typeof rawMessage.type === "string" ? rawMessage.type : "";
         const kind = classifyMessage(role, type);
         const text = extractMessageText(rawMessage);
-        result.push({
+        addDraft(accumulator, {
             kind,
             label: messageLabel(rawMessage, role, type, index),
             text,
@@ -217,7 +207,7 @@ function extractComponents(request) {
     if (Array.isArray(request.tools)) {
         for (const [index, tool] of request.tools.entries()) {
             const name = safeField(toolName(tool) ?? `tool_${index + 1}`, 160);
-            result.push({
+            addDraft(accumulator, {
                 kind: "tools",
                 label: `Tool · ${name}`,
                 text: stableStringify(tool),
@@ -228,7 +218,7 @@ function extractComponents(request) {
     }
     const responseFormat = request.response_format ?? request.text;
     if (responseFormat !== undefined) {
-        result.push({
+        addDraft(accumulator, {
             kind: "other",
             label: "Response format",
             text: stableStringify(responseFormat),
@@ -236,15 +226,69 @@ function extractComponents(request) {
             overheadTokens: 2,
         });
     }
-    return result.length > 0
-        ? result
-        : [{
-                kind: "other",
-                label: "Serialized request",
-                text: stableStringify(request),
-                previewSource: request,
-                overheadTokens: 2,
-            }];
+    if (accumulator.drafts.length === 0 && accumulator.aggregates.size === 0) {
+        addDraft(accumulator, {
+            kind: "other",
+            label: "Serialized request",
+            text: stableStringify(request),
+            previewSource: request,
+            overheadTokens: 2,
+        });
+    }
+    let aggregateCount = 0;
+    for (const kind of COMPONENT_KINDS) {
+        const aggregate = accumulator.aggregates.get(kind);
+        if (!aggregate)
+            continue;
+        aggregateCount += aggregate.count;
+        accumulator.drafts.push({
+            kind,
+            label: `${aggregate.count.toLocaleString("en-US")} additional ${componentKindName(kind)} components (aggregated)`,
+            previewSource: null,
+            estimatedTokens: aggregate.estimatedTokens,
+            bytes: aggregate.bytes,
+            contentHash: aggregate.hash.digest("hex").slice(0, 16),
+            aggregateCount: aggregate.count,
+        });
+    }
+    return { drafts: accumulator.drafts, aggregateCount };
+}
+function addDraft(accumulator, draft) {
+    const estimatedTokens = Math.max(1, estimateTokens(draft.text) + (draft.overheadTokens ?? 0));
+    const bytes = Buffer.byteLength(draft.text, "utf8");
+    if (accumulator.drafts.length < MAX_DETAILED_COMPONENTS) {
+        accumulator.drafts.push({
+            kind: draft.kind,
+            label: draft.label,
+            previewSource: draft.previewSource,
+            estimatedTokens,
+            bytes,
+            contentHash: contentHash(draft.text),
+        });
+        return;
+    }
+    let aggregate = accumulator.aggregates.get(draft.kind);
+    if (!aggregate) {
+        aggregate = { count: 0, estimatedTokens: 0, bytes: 0, hash: createHash("sha256") };
+        accumulator.aggregates.set(draft.kind, aggregate);
+    }
+    aggregate.count += 1;
+    aggregate.estimatedTokens += estimatedTokens;
+    aggregate.bytes += bytes;
+    aggregate.hash
+        .update(draft.kind)
+        .update("\0")
+        .update(String(bytes))
+        .update("\0")
+        .update(draft.text)
+        .update("\0");
+}
+function componentKindName(kind) {
+    if (kind === "tool_result")
+        return "tool-result";
+    if (kind === "tools")
+        return "tool-schema";
+    return kind;
 }
 function classifyMessage(role, type) {
     if (role === "system")

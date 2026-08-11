@@ -6,6 +6,8 @@ A context budget catches accidental prompt growth before it compounds across req
 
 Commit synthetic or approved sanitized JSON under an `evals/` directory. Each file may contain a raw request, a `{ request, response }` wrapper, JSONL cases, or a sanitized HAR. Provider usage in a fixture becomes the displayed total; component breakdowns remain deterministic estimates.
 
+Every configured input must yield at least one supported case. Empty JSONL/arrays, empty or unsupported HAR files, and empty files mixed with valid fixtures fail the gate instead of silently reducing evaluation coverage.
+
 Keep case paths stable. Baselines use a friendly basename when unique, a normalized config-relative path when basenames collide, and a `#N` suffix for multi-record files.
 
 ## 2. Configure limits

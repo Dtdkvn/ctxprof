@@ -126,8 +126,36 @@ async function route(request, response, options) {
     }
     if (request.method === "GET" && requestUrl.pathname === "/api/runs") {
         const limit = clampInteger(requestUrl.searchParams.get("limit"), 1, 5_000, 1_000);
+        const revision = await options.store.revision();
+        const etag = `"runs-${limit}-${revision}"`;
+        if (etagMatches(protocolHeaderValue(request.headers["if-none-match"]), etag)) {
+            notModified(response, etag);
+            return;
+        }
         const runs = await options.store.list(limit);
-        json(response, 200, { runs, storageBytes: await options.store.sizeBytes() });
+        json(response, 200, { runs: runs.map(summarizeRun), storageBytes: await options.store.sizeBytes() }, { etag });
+        return;
+    }
+    if (request.method === "GET" && requestUrl.pathname.startsWith("/api/runs/")) {
+        const encodedId = requestUrl.pathname.slice("/api/runs/".length);
+        let id;
+        try {
+            id = decodeURIComponent(encodedId);
+        }
+        catch {
+            json(response, 400, { error: "The run id is not valid URL encoding." });
+            return;
+        }
+        if (!id || id.length > 256 || id.includes("/")) {
+            json(response, 400, { error: "The run id is invalid." });
+            return;
+        }
+        const run = (await options.store.list(5_000)).find((candidate) => candidate.id === id);
+        if (!run) {
+            json(response, 404, { error: "Run not found" });
+            return;
+        }
+        json(response, 200, dashboardRunDetail(run));
         return;
     }
     if (request.method === "GET" && requestUrl.pathname === "/api/compare") {
@@ -751,13 +779,48 @@ function html(response, status, body) {
     });
     response.end(body);
 }
-function json(response, status, body) {
+function json(response, status, body, headers = {}) {
     response.writeHead(status, {
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-store",
         "x-content-type-options": "nosniff",
+        ...headers,
     });
     response.end(JSON.stringify(body));
+}
+function notModified(response, etag) {
+    response.writeHead(304, {
+        etag,
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+    });
+    response.end();
+}
+function etagMatches(header, etag) {
+    if (!header)
+        return false;
+    return header.split(",").some((candidate) => {
+        const normalized = candidate.trim();
+        return normalized === "*" || normalized === etag || normalized === `W/${etag}`;
+    });
+}
+function summarizeRun(run) {
+    return {
+        id: run.id,
+        capturedAt: run.capturedAt,
+        endpoint: run.endpoint,
+        status: run.status,
+        model: run.model,
+        label: run.label,
+        promptVersion: run.promptVersion,
+        source: run.source,
+        totals: { ...run.totals },
+    };
+}
+function dashboardRunDetail(run) {
+    const { exchange, ...detail } = run;
+    void exchange;
+    return detail;
 }
 function requestBoundaryError(request, options) {
     const hostHeader = protocolHeaderValue(request.headers.host);

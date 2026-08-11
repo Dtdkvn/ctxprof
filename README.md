@@ -73,7 +73,7 @@ const client = new OpenAI({
 
 The optional headers are consumed locally, persisted as the bounded `label` and `promptVersion` fields, and not forwarded upstream. Do not put secrets in them. An incoming `Authorization` header takes precedence over `OPENAI_API_KEY`; neither credential is persisted.
 
-Open the live dashboard at the same origin; it polls the bounded local store while visible and shows new captures without a reload. Or export a portable report:
+Open the live dashboard at the same origin; while visible, it conditionally polls a lightweight summary feed and lazily loads only the selected bounded profile. New captures appear without a reload, and unchanged polls carry no JSON body. Or export a portable report:
 
 ```bash
 ctxprof report --output context-report.html
@@ -119,6 +119,7 @@ ctxprof report
 ```
 
 Use `--json` for machine-readable analysis and `--report report.html` to create a report without adding anything to the store.
+Every explicitly named input must contain at least one supported record. Empty JSONL/arrays, empty or unsupported HAR exports, and a single empty file mixed into a larger evaluation fail the command instead of silently shrinking coverage.
 
 ## Context budget tests
 
@@ -150,7 +151,7 @@ ctxprof check --update-baseline
 ctxprof check
 ```
 
-The check exits `1` and explains every violated metric. Explicit config paths must exist, and regression thresholds require a loaded baseline. A cost limit also fails when pricing is unknown; silently treating unknown cost as zero would make the gate unsafe.
+The check exits `1` and explains every violated metric. Explicit config paths and inputs must exist and produce cases, and regression thresholds require a loaded baseline. A cost limit also fails when pricing is unknown; silently treating unknown cost as zero would make the gate unsafe.
 
 ### GitHub Action
 

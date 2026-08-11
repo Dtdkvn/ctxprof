@@ -16,13 +16,13 @@ All notable changes will be documented here. Ctxprof follows [Semantic Versionin
 
 ### Added
 
-- OpenAI-compatible Chat Completions and Responses proxy with JSON/SSE pass-through, strict Host/Origin boundaries, a positive upstream-header allowlist, raw encoding preservation, abort propagation, deadlines, bounded request/stream accounting, and a polling live dashboard.
+- OpenAI-compatible Chat Completions and Responses proxy with JSON/SSE pass-through, strict Host/Origin boundaries, a positive upstream-header allowlist, raw encoding preservation, abort propagation, deadlines, bounded request/stream accounting, and an ETag-conditional summary dashboard with lazy run details.
 - Local interactive treemap, component details, cost insights, and explainable waste warnings.
-- JSON, JSONL, HAR, OpenAI Batch, and normalized-run imports with strict metadata/schema validation, explicit overrides, safe repricing, and interrupted-final-record recovery.
+- JSON, JSONL, HAR, OpenAI Batch, and normalized-run imports with strict metadata/schema validation, explicit overrides, safe repricing, interrupted-final-record recovery before append, and per-kind high-cardinality aggregation before detail allocation.
 - Prompt-version A/B aggregation and CLI diff.
-- Fail-closed context budget test with absolute limits, required committed baselines for regressions, stable path-qualified collision identities, exit codes, and GitHub annotations.
+- Fail-closed context budget test with absolute limits, required committed baselines for regressions, nonempty per-file coverage, stable path-qualified collision identities, exit codes, and GitHub annotations.
 - Structure-aware secret redaction, preview-free metadata-only capture, a bounded append-only JSONL store, and loopback-only default.
-- Dated exact-match OpenAI standard text pricing plus custom provider catalogs.
+- Dated exact-match OpenAI standard text pricing plus validated custom provider catalogs whose supported rates always produce finite costs.
 - Deterministic no-key demo, fixture suite, mock-upstream integration tests, hardened non-root Docker/Compose, and an offline prebuilt Node 24 GitHub Action.
 - Maintained Node.js 22/24 support, complete CLI help and npm tarball assets, SHA-pinned CI, trusted publishing, and verified release provenance.
 

@@ -20,6 +20,39 @@ test("stores JSONL captures and tolerates an interrupted final record", async (c
   assert.ok((await store.sizeBytes()) > 0);
 });
 
+test("append and appendMany repair an interrupted final record before writing", async (context) => {
+  for (const method of ["append", "appendMany"] as const) {
+    const directory = await mkdtemp(path.join(tmpdir(), `ctxprof-store-${method}-tail-`));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const store = new RunStore(directory);
+    const [first, second] = createDemoRuns();
+    assert.ok(first && second);
+    await store.append(first);
+    await appendFile(store.runsFile, '{"schemaVersion":1', "utf8");
+
+    if (method === "append") await store.append(second);
+    else await store.appendMany([second]);
+
+    assert.deepEqual((await store.list()).map((run) => run.id), [second.id, first.id]);
+  }
+});
+
+test("store revisions are stable until queued storage changes", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-store-revision-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new RunStore(directory);
+  assert.equal(await store.revision(), "0-0");
+  assert.equal(await store.revision(), "0-0");
+
+  const [first, second] = createDemoRuns();
+  assert.ok(first && second);
+  await store.append(first);
+  const firstRevision = await store.revision();
+  assert.equal(await store.revision(), firstRevision);
+  await store.append(second);
+  assert.notEqual(await store.revision(), firstRevision);
+});
+
 test("store list and append enforce numeric and serialized-run bounds", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-store-bounds-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -54,6 +87,7 @@ test("rejects malformed or non-run records before the interrupted final tail", a
   const [first, second] = createDemoRuns();
   assert.ok(first && second);
   await writeFile(store.runsFile, `${JSON.stringify(first)}\n{broken\n${JSON.stringify(second)}\n`, "utf8");
+  await store.append(first);
   await assert.rejects(() => store.list(), /runs\.jsonl:2/);
 
   await writeFile(store.runsFile, `${JSON.stringify(first)}\n{}\n`, "utf8");

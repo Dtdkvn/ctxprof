@@ -20,11 +20,11 @@ Maintainers should acknowledge a complete report within three business days, pro
 - Ordinary headers are used only for forwarding and are never included in a `ProfileRun`. The explicit `x-ctxprof-label` and `x-ctxprof-version` values are converted to bounded, redacted run metadata and are not forwarded.
 - `Authorization` and `OPENAI_API_KEY` values are never printed.
 - Stored exchange bodies pass through recursive key-based and pattern-based secret redaction.
-- Proxy requests are capped at 5 MiB. Normalized components, warnings, and serialized runs have hard bounds; omitted detail is represented by an aggregate hash and explicit warning, and an exchange over the storage limit is replaced by a one-way content hash and notice.
+- Proxy requests are capped at 5 MiB. Normalized components, warnings, and serialized runs have hard bounds; high-cardinality detail is accumulated into bounded per-kind hashes and totals before component objects or warnings are created, and an exchange over the storage limit is replaced by a one-way content hash and notice.
 - `--capture none` omits request/response bodies and all component previews while keeping component metrics and short hashes.
 - Store files use owner-only POSIX modes where the filesystem supports them.
 - The browser UI has no third-party scripts, styles, fonts, analytics, or telemetry.
-- The live server sends a restrictive Content Security Policy, `nosniff`, and no-referrer headers. Static reports embed an equivalent CSP meta policy and disable network connections.
+- The live server sends a restrictive Content Security Policy, `nosniff`, and no-referrer headers. Its conditional feed excludes exchanges, component previews, and warnings; the selected detail projection is fetched separately and still excludes the stored exchange. Static reports embed an equivalent CSP meta policy and disable network connections.
 
 ### What Ctxprof does not protect
 

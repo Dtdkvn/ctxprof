@@ -74,6 +74,19 @@ test("empty value options fail before a proxy listener can keep the process aliv
   assert.match(result.stderr, /--upstream requires a non-empty value/);
 });
 
+test("commands reject unexpected positional arguments with command-specific help", () => {
+  for (const args of [
+    ["pricing", "stray"],
+    ["doctor", "stray"],
+    ["compare", "a", "b", "c"],
+  ]) {
+    const result = runCli(args);
+    assert.equal(result.status, 1, `${args.join(" ")}: ${result.stderr}\n${result.stdout}`);
+    assert.match(result.stderr, new RegExp(`Usage: ctxprof ${args[0]}`));
+    assert.match(result.stderr, new RegExp(`ctxprof help ${args[0]}`));
+  }
+});
+
 test("check fails closed for missing configs and regression rules without a baseline", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-cli-check-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -135,6 +148,28 @@ test("budget case identities stay stable when colliding basenames are reordered"
   const reverseCases = Object.keys((JSON.parse(reverse.stdout) as { cases: object }).cases).sort();
   assert.deepEqual(forwardCases, ["a/same.json", "b/same.json"]);
   assert.deepEqual(reverseCases, forwardCases);
+});
+
+test("analyze, import, and check reject a mixed valid and empty input set", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-empty-input-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const valid = path.resolve("test/fixtures/chat-baseline.json");
+  const empty = path.join(directory, "empty.jsonl");
+  const data = path.join(directory, "data");
+  await writeFile(empty, "", "utf8");
+
+  const commands = [
+    ["analyze", valid, empty, "--json"],
+    ["import", valid, empty, "--data", data],
+    ["check", valid, empty, "--max-input-tokens", "100000", "--json"],
+  ];
+  for (const args of commands) {
+    const result = runCli(args, {}, directory);
+    assert.equal(result.status, 1, `${args[0]}: ${result.stderr}\n${result.stdout}`);
+    assert.match(result.stderr, /No supported records.*empty\.jsonl/);
+  }
+
+  await assert.rejects(() => readFile(path.join(data, "runs.jsonl")), { code: "ENOENT" });
 });
 
 function runDoctor(

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { analyzeExchange } from "../src/analyzer.js";
 import { MAX_PROFILE_COMPONENTS, MAX_PROFILE_RUN_BYTES, MAX_PROFILE_WARNINGS } from "../src/limits.js";
@@ -118,29 +119,53 @@ test("ignores unsafe or overflowing provider token counts", () => {
 });
 
 test("bounds adversarial component and warning amplification without losing totals", () => {
+  const tools = Array.from({ length: 200_000 }, () => null);
+  const heapBefore = process.memoryUsage().heapUsed;
+  const started = performance.now();
   const run = analyzeExchange(
     {
       model: "custom-model",
       messages: [{ role: "user", content: "small prompt" }],
-      tools: Array.from({ length: 20_000 }, () => null),
+      tools,
     },
     null,
     { captureMode: "none" },
   );
+  const elapsedMs = performance.now() - started;
+  const heapGrowth = Math.max(0, process.memoryUsage().heapUsed - heapBefore);
 
   assert.equal(isProfileRun(run), true);
-  assert.equal(run.components.length, MAX_PROFILE_COMPONENTS);
+  assert.ok(run.components.length <= MAX_PROFILE_COMPONENTS);
   assert.ok(run.warnings.length <= MAX_PROFILE_WARNINGS);
   assert.equal(
     run.warnings.filter((warning) => warning.code === "analysis-truncated").length,
     1,
   );
-  assert.match(run.components.at(-1)?.label ?? "", /additional components \(aggregated\)/);
+  const toolAggregate = run.components.find((component) =>
+    component.kind === "tools" && /additional tool-schema components \(aggregated\)/.test(component.label)
+  );
+  assert.ok(toolAggregate);
+  assert.match(toolAggregate.contentHash, /^[0-9a-f]{16}$/);
+  assert.equal(
+    run.components
+      .filter((component) => component.kind === "tools")
+      .reduce((sum, component) => sum + component.estimatedTokens, 0),
+    1_000_000,
+    "overflow keeps every tool token attributed to the tools budget kind",
+  );
+  assert.equal(
+    run.components
+      .filter((component) => component.kind === "tools")
+      .reduce((sum, component) => sum + component.bytes, 0),
+    800_000,
+  );
   assert.equal(
     run.components.reduce((sum, component) => sum + component.estimatedTokens, 0),
     run.totals.estimatedInputTokens,
   );
   assert.ok(Buffer.byteLength(JSON.stringify(run), "utf8") <= MAX_PROFILE_RUN_BYTES);
+  assert.ok(heapGrowth < 64 * 1024 * 1024, `analysis heap grew by ${heapGrowth} bytes`);
+  assert.ok(elapsedMs < 5_000, `analysis took ${elapsedMs.toFixed(0)} ms`);
 });
 
 test("treats an existing tool result as evidence that the tool was used", () => {

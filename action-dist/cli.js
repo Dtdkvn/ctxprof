@@ -122,8 +122,10 @@ export async function main(argv = process.argv.slice(2)) {
         return 0;
     }
     const allowedOptions = COMMAND_OPTIONS[command];
-    if (allowedOptions)
+    if (allowedOptions) {
         validateOptions(parsed, allowedOptions);
+        validateCommandPositionals(command, parsed);
+    }
     switch (command) {
         case "analyze":
             return analyzeCommand(parsed);
@@ -150,7 +152,6 @@ export async function main(argv = process.argv.slice(2)) {
     }
 }
 async function analyzeCommand(parsed) {
-    requireFiles(parsed);
     const pricing = await loadPricingFile(stringOption(parsed, "pricing"));
     const imports = await importInputs(parsed.positionals, importOptions(parsed, pricing));
     const runs = imports.map((entry) => entry.run);
@@ -169,7 +170,6 @@ async function analyzeCommand(parsed) {
     return 0;
 }
 async function importCommand(parsed) {
-    requireFiles(parsed);
     const pricing = await loadPricingFile(stringOption(parsed, "pricing"));
     const imports = await importInputs(parsed.positionals, importOptions(parsed, pricing));
     const store = new RunStore(dataDirectory(parsed));
@@ -278,6 +278,9 @@ async function checkCommand(parsed) {
     const pricing = await loadPricingFile(stringOption(parsed, "pricing"));
     const imports = await importInputs(inputs, { captureMode: "none", pricing }, configDirectory);
     const cases = metricsForRuns(imports);
+    if (Object.keys(cases).length === 0) {
+        throw new Error("No context-budget cases were produced. Every check input must contain at least one supported record.");
+    }
     const baselineOption = stringOption(parsed, "baseline") ?? config.baseline;
     const baselinePath = baselineOption ? path.resolve(configDirectory, baselineOption) : null;
     const update = hasFlag(parsed, "update-baseline");
@@ -560,6 +563,34 @@ function validateOptions(parsed, allowed) {
         }
     }
 }
+function validateCommandPositionals(command, parsed) {
+    const count = parsed.positionals.length;
+    if (command === "analyze" || command === "import") {
+        if (count === 0)
+            positionalUsageError(command, "requires at least one input file");
+        return;
+    }
+    if (command === "check")
+        return;
+    if (command === "compare") {
+        const fromOption = stringOption(parsed, "from");
+        const toOption = stringOption(parsed, "to");
+        const duplicatesFrom = count >= 1 && fromOption !== undefined;
+        const duplicatesTo = count >= 2 && toOption !== undefined;
+        const from = parsed.positionals[0] ?? fromOption;
+        const to = parsed.positionals[1] ?? toOption;
+        if (count > 2 || duplicatesFrom || duplicatesTo || !from || !to) {
+            positionalUsageError(command, "requires exactly two version arguments (two positionals, or the matching --from/--to options)");
+        }
+        return;
+    }
+    if (count !== 0)
+        positionalUsageError(command, "does not accept positional arguments");
+}
+function positionalUsageError(command, detail) {
+    const usage = COMMAND_HELP[command]?.usage ?? `ctxprof ${command} [options]`;
+    throw new Error(`ctxprof ${command} ${detail}. Usage: ${usage}. Run ctxprof help ${command} for details.`);
+}
 function stringOption(parsed, name) {
     const value = parsed.options.get(name);
     if (typeof value === "string")
@@ -605,10 +636,6 @@ function captureOption(parsed) {
 }
 function dataDirectory(parsed) {
     return stringOption(parsed, "data") ?? process.env.CTXPROF_DATA ?? ".ctxprof";
-}
-function requireFiles(parsed) {
-    if (parsed.positionals.length === 0)
-        throw new Error("Pass at least one .json, .jsonl, or .har file.");
 }
 function integerFromEnv(name, min, max) {
     const value = process.env[name];

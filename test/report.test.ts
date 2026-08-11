@@ -28,6 +28,17 @@ test("exports a self-contained interactive report", async (context) => {
 
 test("live dashboards poll sequentially and render newly captured runs without reload", async () => {
   const demo = createDemoRuns();
+  const summary = (run: (typeof demo)[number]) => ({
+    id: run.id,
+    capturedAt: run.capturedAt,
+    endpoint: run.endpoint,
+    status: run.status,
+    model: run.model,
+    label: run.label,
+    promptVersion: run.promptVersion,
+    source: run.source,
+    totals: run.totals,
+  });
   const html = renderDashboard([], { mode: "proxy", generatedAt: "2026-08-12T00:00:00.000Z" });
   const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
   assert.ok(script);
@@ -51,12 +62,38 @@ test("live dashboards poll sequentially and render newly captured runs without r
   };
   const timers: Array<() => void> = [];
   let clearedTimers = 0;
-  let fetchCount = 0;
-  const fetchStub = async () => {
-    fetchCount += 1;
+  let feedCount = 0;
+  let detailCount = 0;
+  const feedHeaders: Array<string | undefined> = [];
+  const fetchStub = async (url: string, init?: { headers?: Record<string, string> }) => {
+    if (url.startsWith("/api/runs/")) {
+      detailCount += 1;
+      const id = decodeURIComponent(url.slice("/api/runs/".length));
+      const run = demo.find((candidate) => candidate.id === id);
+      assert.ok(run);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => run,
+      };
+    }
+    feedCount += 1;
+    feedHeaders.push(init?.headers?.["If-None-Match"]);
+    if (feedCount === 3) {
+      return {
+        ok: false,
+        status: 304,
+        headers: { get: () => '"feed-v2"' },
+        json: async () => { throw new Error("304 responses have no body"); },
+      };
+    }
+    const etag = feedCount === 1 ? '"feed-v1"' : '"feed-v2"';
     return {
       ok: true,
-      json: async () => ({ runs: fetchCount === 1 ? [demo[0]] : [demo[1], demo[0]] }),
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === "etag" ? etag : null },
+      json: async () => ({ runs: feedCount === 1 ? [summary(demo[0]!)] : [summary(demo[1]!), summary(demo[0]!)] }),
     };
   };
   const setTimeoutStub = (callback: () => void) => {
@@ -74,12 +111,23 @@ test("live dashboards poll sequentially and render newly captured runs without r
   await flushPromises();
   assert.match(getElement("run-list").innerHTML, /Support agent · verbose/);
   assert.match(getElement("app").innerHTML, /Proxy live/);
+  assert.equal(feedCount, 1);
+  assert.equal(detailCount, 1, "only the selected run loads its full profile");
   assert.equal(timers.length, 1);
 
   timers.shift()?.();
   await flushPromises();
   assert.match(getElement("run-list").innerHTML, /Support agent · lean/);
-  assert.equal(fetchCount, 2);
+  assert.equal(feedCount, 2);
+  assert.equal(detailCount, 1, "new summaries do not eagerly load full runs");
+  assert.equal(feedHeaders[1], '"feed-v1"');
+  assert.equal(timers.length, 1);
+
+  timers.shift()?.();
+  await flushPromises();
+  assert.equal(feedCount, 3);
+  assert.equal(feedHeaders[2], '"feed-v2"');
+  assert.match(getElement("run-list").innerHTML, /Support agent · lean/);
   assert.equal(timers.length, 1);
 
   documentStub.hidden = true;

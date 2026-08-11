@@ -130,3 +130,31 @@ test("rejects invalid wrapper and HAR status or duration metadata", async (conte
   }), "utf8");
   await assert.rejects(() => importFile(har), /HAR response\.status|HAR entry\.time/);
 });
+
+test("rejects every input document that contains no supported records", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-empty-documents-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const documents = [
+    ["empty.jsonl", ""],
+    ["empty-array.json", "[]"],
+    ["empty.har", JSON.stringify({ log: { entries: [] } })],
+    ["unsupported.har", JSON.stringify({
+      log: {
+        entries: [
+          {},
+          { request: { url: "https://example.test", postData: {} } },
+          { request: { url: "https://example.test", postData: { text: "not json" } } },
+        ],
+      },
+    })],
+  ] as const;
+
+  for (const [name, contents] of documents) {
+    const input = path.join(directory, name);
+    await writeFile(input, contents, "utf8");
+    await assert.rejects(
+      () => importFile(input),
+      new RegExp(`No supported records.*${name.replace(".", "\\.")}`),
+    );
+  }
+});

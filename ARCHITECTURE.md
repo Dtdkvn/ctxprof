@@ -70,7 +70,7 @@ A run contains:
 - structured, explainable warnings;
 - a redacted/capped exchange or explicit metadata-only marker.
 
-Component allocation preserves the provider input total: each estimated component receives a proportional count, with rounding remainder assigned to the largest component. This makes the treemap reconcile with billing usage while keeping its decomposition explicitly approximate.
+Component allocation preserves the provider input total: each estimated component receives a proportional count, with rounding remainder assigned to the largest component. High-cardinality inputs are accumulated before detail objects are created, with one bounded aggregate per original component kind so component budgets cannot lose attribution. This makes the treemap reconcile with billing usage while keeping its decomposition explicitly approximate.
 
 ## Persistence
 
@@ -92,7 +92,8 @@ Complex billing metadata—cached reads/writes, batch, service tier, tool fees, 
 |---|---|---|
 | `GET /` | serve/proxy | Local dashboard |
 | `GET /healthz` | serve/proxy | Container/process health |
-| `GET /api/runs?limit=N` | serve/proxy | Recent normalized runs |
+| `GET /api/runs?limit=N` | serve/proxy | Lightweight recent-run summaries with an ETag; an unchanged conditional request returns `304` |
+| `GET /api/runs/:id` | serve/proxy | One selected detail projection for the dashboard; the stored exchange is excluded |
 | `GET /api/compare?from=A&to=B` | serve/proxy | Aggregate version diff |
 | `POST /v1/*` | proxy only | OpenAI-compatible forwarding/profiling |
 

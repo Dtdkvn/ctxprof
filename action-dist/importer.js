@@ -10,8 +10,14 @@ export async function importFile(filePath, options = {}) {
     const absolute = path.resolve(filePath);
     const contents = await readFile(absolute, "utf8");
     const modified = (await stat(absolute)).mtime.toISOString();
-    const values = parseDocument(contents, path.extname(absolute).toLowerCase());
-    const exchanges = values.flatMap(extractRecords);
+    const extension = path.extname(absolute).toLowerCase();
+    const values = parseDocument(contents, extension);
+    const exchanges = extension === ".har"
+        ? values.flatMap(extractHarDocument)
+        : values.flatMap(extractRecords);
+    if (exchanges.length === 0) {
+        throw new Error(`No supported records found in “${absolute}”. Expected a ProfileRun, OpenAI request wrapper, JSONL record, or HAR entry with JSON request postData.`);
+    }
     const baseName = path.basename(filePath);
     return exchanges.map((value, index) => {
         if (isProfileRun(value)) {
@@ -187,7 +193,7 @@ function extractRecords(value) {
         throw new Error("Invalid ProfileRun schema. Normalized runs must contain finite, internally consistent v1 fields.");
     }
     if (isRecord(value.log) && Array.isArray(value.log.entries)) {
-        return value.log.entries.flatMap(extractHarEntry);
+        return extractHarDocument(value);
     }
     if (Array.isArray(value.runs))
         return value.runs.flatMap(extractRecords);
@@ -223,6 +229,11 @@ function extractRecords(value) {
         ];
     }
     return [{ request: value, response: null }];
+}
+function extractHarDocument(value) {
+    if (!isRecord(value) || !isRecord(value.log) || !Array.isArray(value.log.entries))
+        return [];
+    return value.log.entries.flatMap(extractHarEntry);
 }
 function looksLikeProfileRun(value) {
     return value.schemaVersion === 1 &&

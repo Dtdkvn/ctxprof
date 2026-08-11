@@ -104,7 +104,13 @@ test("proxy capture bounds adversarial component amplification before persistenc
   });
   assert.equal(response.status, 200);
   const run = await captured;
-  assert.equal(run.components.length, MAX_PROFILE_COMPONENTS);
+  assert.ok(run.components.length <= MAX_PROFILE_COMPONENTS);
+  assert.equal(
+    run.components
+      .filter((component) => component.kind === "tools")
+      .reduce((sum, component) => sum + component.estimatedTokens, 0),
+    100_000,
+  );
   assert.ok(run.warnings.length <= MAX_PROFILE_WARNINGS);
   assert.equal(run.warnings.filter((warning) => warning.code === "analysis-truncated").length, 1);
   assert.ok(Buffer.byteLength(JSON.stringify(run), "utf8") <= MAX_PROFILE_RUN_BYTES);
@@ -353,6 +359,53 @@ test("lists the default number of runs when the limit query is absent or blank",
   }
   const limited = await fetch(`${server.url}/api/runs?limit=1`);
   assert.equal(((await limited.json()) as { runs: ProfileRun[] }).runs.length, 1);
+});
+
+test("serves bounded run summaries conditionally and loads selected details on demand", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-summary-feed-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new RunStore(directory);
+  const largeMarker = `large-private-exchange-${"x".repeat(300_000)}`;
+  const largeRun = analyzeExchange(
+    { model: "custom", messages: [{ role: "user", content: largeMarker }] },
+    null,
+    { captureMode: "redacted", label: "large-local-run" },
+  );
+  await store.append(largeRun);
+  const server = await startServer({ port: 0, store, quiet: true });
+  context.after(() => server.close());
+
+  const first = await fetch(`${server.url}/api/runs?limit=1000`);
+  assert.equal(first.status, 200);
+  const etag = first.headers.get("etag");
+  assert.ok(etag);
+  const firstBody = await first.text();
+  assert.ok(Buffer.byteLength(firstBody, "utf8") < 4_096, "summary feed stays independent of exchange size");
+  assert.doesNotMatch(firstBody, /large-private-exchange/);
+  assert.doesNotMatch(firstBody, /"exchange"|"components"|"warnings"/);
+  const summary = JSON.parse(firstBody) as { runs: Array<{ id: string; label: string }> };
+  assert.deepEqual(summary.runs.map((run) => run.label), ["large-local-run"]);
+
+  const unchanged = await fetch(`${server.url}/api/runs?limit=1000`, {
+    headers: { "if-none-match": etag },
+  });
+  assert.equal(unchanged.status, 304);
+  assert.equal(await unchanged.text(), "");
+
+  const detail = await fetch(`${server.url}/api/runs/${encodeURIComponent(largeRun.id)}`);
+  assert.equal(detail.status, 200);
+  const detailBody = await detail.text();
+  assert.match(detailBody, /large-private-exchange/);
+  assert.doesNotMatch(detailBody, /"exchange"/);
+  assert.ok(Buffer.byteLength(detailBody, "utf8") < 128 * 1024);
+
+  await store.append(analyzeExchange({ model: "custom", messages: [{ role: "user", content: "new" }] }));
+  const changed = await fetch(`${server.url}/api/runs?limit=1000`, {
+    headers: { "if-none-match": etag },
+  });
+  assert.equal(changed.status, 200);
+  assert.notEqual(changed.headers.get("etag"), etag);
+  assert.equal(((await changed.json()) as { runs: unknown[] }).runs.length, 2);
 });
 
 test("serve and proxy dashboards expose distinct live modes", async (context) => {

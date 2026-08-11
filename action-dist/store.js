@@ -1,6 +1,7 @@
-import { appendFile, chmod, mkdir, readFile, stat } from "node:fs/promises";
+import { appendFile, chmod, mkdir, open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { MAX_PROFILE_COMPONENTS, MAX_PROFILE_RUN_BYTES, MAX_PROFILE_WARNINGS } from "./limits.js";
+import { MAX_PRICING_RATE_USD_PER_MILLION } from "./pricing.js";
 const COMPONENT_KINDS = new Set(["system", "developer", "tools", "message", "tool_result", "other"]);
 const WARNING_CODES = new Set([
     "unused-tool",
@@ -16,6 +17,7 @@ const WARNING_CODES = new Set([
 ]);
 const WARNING_SEVERITIES = new Set(["info", "warning", "critical"]);
 const RUN_SOURCES = new Set(["proxy", "import", "fixture"]);
+const TAIL_SCAN_CHUNK_BYTES = 64 * 1024;
 export class RunStore {
     directory;
     runsFile;
@@ -32,7 +34,8 @@ export class RunStore {
         await this.init();
         const payload = serializeRun(run);
         await this.enqueue(async () => {
-            await appendFile(this.runsFile, `${payload}\n`, { encoding: "utf8", mode: 0o600 });
+            const separator = await prepareRunsFileForAppend(this.runsFile);
+            await appendFile(this.runsFile, `${separator}${payload}\n`, { encoding: "utf8", mode: 0o600 });
             await bestEffortChmod(this.runsFile, 0o600);
         });
     }
@@ -42,7 +45,8 @@ export class RunStore {
         await this.init();
         const payload = runs.map(serializeRun).join("\n") + "\n";
         await this.enqueue(async () => {
-            await appendFile(this.runsFile, payload, { encoding: "utf8", mode: 0o600 });
+            const separator = await prepareRunsFileForAppend(this.runsFile);
+            await appendFile(this.runsFile, `${separator}${payload}`, { encoding: "utf8", mode: 0o600 });
             await bestEffortChmod(this.runsFile, 0o600);
         });
     }
@@ -100,6 +104,18 @@ export class RunStore {
             throw error;
         }
     }
+    async revision() {
+        await this.writeQueue;
+        try {
+            const metadata = await stat(this.runsFile, { bigint: true });
+            return `${metadata.size.toString(36)}-${metadata.mtimeNs.toString(36)}`;
+        }
+        catch (error) {
+            if (isNotFound(error))
+                return "0-0";
+            throw error;
+        }
+    }
     async enqueue(operation) {
         const current = this.writeQueue.then(operation, operation);
         // Keep the internal queue usable after a failed write while returning the
@@ -107,6 +123,83 @@ export class RunStore {
         this.writeQueue = current.catch(() => undefined);
         await current;
     }
+}
+async function prepareRunsFileForAppend(runsFile) {
+    let handle;
+    try {
+        handle = await open(runsFile, "r+");
+    }
+    catch (error) {
+        if (isNotFound(error))
+            return "";
+        throw error;
+    }
+    try {
+        const metadata = await handle.stat();
+        if (metadata.size === 0)
+            return "";
+        const bounds = await findLastNonemptyLine(handle, metadata.size);
+        if (bounds) {
+            const length = bounds.end - bounds.start;
+            if (length > MAX_PROFILE_RUN_BYTES) {
+                throw new Error(`Refusing to append because the trailing JSONL record is ${length} bytes; ` +
+                    `the safe inspection limit is ${MAX_PROFILE_RUN_BYTES} bytes.`);
+            }
+            const bytes = Buffer.allocUnsafe(length);
+            const result = await handle.read(bytes, 0, length, bounds.start);
+            if (result.bytesRead !== length) {
+                throw new Error(`Could not inspect the trailing JSONL record in ${runsFile}.`);
+            }
+            try {
+                JSON.parse(bytes.toString("utf8"));
+            }
+            catch {
+                await handle.truncate(bounds.start);
+                return "";
+            }
+        }
+        const finalByte = Buffer.allocUnsafe(1);
+        const result = await handle.read(finalByte, 0, 1, metadata.size - 1);
+        if (result.bytesRead !== 1) {
+            throw new Error(`Could not inspect the end of ${runsFile}.`);
+        }
+        return finalByte[0] === 0x0a ? "" : "\n";
+    }
+    finally {
+        await handle.close();
+    }
+}
+async function findLastNonemptyLine(handle, size) {
+    let cursor = size;
+    let end = -1;
+    while (cursor > 0) {
+        const start = Math.max(0, cursor - TAIL_SCAN_CHUNK_BYTES);
+        const length = cursor - start;
+        const bytes = Buffer.allocUnsafe(length);
+        const result = await handle.read(bytes, 0, length, start);
+        if (result.bytesRead !== length) {
+            throw new Error("Could not scan the trailing JSONL record.");
+        }
+        for (let index = length - 1; index >= 0; index -= 1) {
+            const byte = bytes[index];
+            if (byte === undefined)
+                continue;
+            const position = start + index;
+            if (end < 0) {
+                if (isJsonlWhitespace(byte))
+                    continue;
+                end = position + 1;
+            }
+            else if (byte === 0x0a) {
+                return { start: position + 1, end };
+            }
+        }
+        cursor = start;
+    }
+    return end < 0 ? null : { start: 0, end };
+}
+function isJsonlWhitespace(byte) {
+    return byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d;
 }
 export function isProfileRun(value) {
     if (!isRecord(value))
@@ -213,11 +306,14 @@ function isPricing(value) {
         return true;
     return isRecord(value) &&
         isNonemptyString(value.model) &&
-        isNonnegativeNumber(value.inputPerMillionUsd) &&
-        isNonnegativeNumber(value.outputPerMillionUsd) &&
+        isPricingRate(value.inputPerMillionUsd) &&
+        isPricingRate(value.outputPerMillionUsd) &&
         (value.contextWindow === null || isPositiveInteger(value.contextWindow)) &&
         isNonemptyString(value.source) &&
         isNonemptyString(value.checkedAt);
+}
+function isPricingRate(value) {
+    return isNonnegativeNumber(value) && value <= MAX_PRICING_RATE_USD_PER_MILLION;
 }
 function isComponent(value) {
     return isRecord(value) &&
