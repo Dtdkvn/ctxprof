@@ -1,7 +1,9 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { analyzeExchange } from "./analyzer.js";
-import { contentHash, redactValue } from "./redaction.js";
+import { MAX_PROFILE_WARNINGS } from "./limits.js";
+import { findPricing } from "./pricing.js";
+import { contentHash, redactText, redactValue } from "./redaction.js";
 import { isProfileRun } from "./store.js";
 import { stableStringify } from "./tokenizer.js";
 export async function importFile(filePath, options = {}) {
@@ -13,9 +15,10 @@ export async function importFile(filePath, options = {}) {
     const baseName = path.basename(filePath);
     return exchanges.map((value, index) => {
         if (isProfileRun(value)) {
+            const sanitized = sanitizeImportedRun(value, options.captureMode ?? "redacted");
             return {
                 name: exchanges.length === 1 ? baseName : `${baseName}#${index + 1}`,
-                run: sanitizeImportedRun(value, options.captureMode ?? "redacted"),
+                run: applyImportedRunOverrides(sanitized, options),
             };
         }
         const analyzeOptions = {
@@ -37,6 +40,89 @@ export async function importFile(filePath, options = {}) {
             run: analyzeExchange(value.request, value.response, analyzeOptions),
         };
     });
+}
+function applyImportedRunOverrides(run, options) {
+    const label = safeOverride(options.label, 200) ?? run.label;
+    const promptVersion = safeOverride(options.promptVersion, 160) ?? run.promptVersion;
+    const model = safeOverride(options.model, 200) ?? run.model;
+    const overridden = {
+        ...run,
+        label,
+        promptVersion,
+        model,
+        ...(options.source ? { source: options.source } : {}),
+    };
+    if (model === run.model && !(options.pricing?.length))
+        return overridden;
+    return repriceImportedRun(overridden, options.pricing ?? []);
+}
+function repriceImportedRun(run, additionalPricing) {
+    const pricing = findPricing(run.model, additionalPricing);
+    const inputTokens = run.totals.providerInputTokens ?? run.totals.estimatedInputTokens;
+    const inputCost = pricing
+        ? roundUsd((inputTokens / 1_000_000) * pricing.inputPerMillionUsd)
+        : null;
+    const outputCost = pricing
+        ? roundUsd((run.totals.outputTokens / 1_000_000) * pricing.outputPerMillionUsd)
+        : null;
+    const warnings = run.warnings.filter((warning) => warning.code !== "unknown-pricing" && warning.code !== "context-pressure");
+    if (!pricing) {
+        appendImportedWarning(warnings, {
+            code: "unknown-pricing",
+            severity: "info",
+            title: "Price is unknown for this model",
+            detail: "Add an exact model entry to a pricing catalog instead of relying on a guessed alias.",
+        });
+    }
+    else if (pricing.contextWindow && inputTokens / pricing.contextWindow >= 0.8) {
+        appendImportedWarning(warnings, {
+            code: "context-pressure",
+            severity: inputTokens > pricing.contextWindow ? "critical" : "warning",
+            title: "Context window is under pressure",
+            detail: `${Math.round((inputTokens / pricing.contextWindow) * 100)}% of the cataloged context window is occupied by input.`,
+        });
+    }
+    return {
+        ...run,
+        pricing,
+        components: run.components.map((component) => ({
+            ...component,
+            estimatedCostUsd: pricing
+                ? roundUsd((component.allocatedInputTokens / 1_000_000) * pricing.inputPerMillionUsd)
+                : null,
+        })),
+        totals: {
+            ...run.totals,
+            estimatedInputCostUsd: inputCost,
+            estimatedOutputCostUsd: outputCost,
+            estimatedTotalCostUsd: inputCost === null || outputCost === null ? null : roundUsd(inputCost + outputCost),
+        },
+        warnings,
+    };
+}
+function appendImportedWarning(warnings, warning) {
+    if (warnings.length >= MAX_PROFILE_WARNINGS) {
+        let removable = -1;
+        for (let index = warnings.length - 1; index >= 0; index -= 1) {
+            if (warnings[index]?.code !== "analysis-truncated") {
+                removable = index;
+                break;
+            }
+        }
+        if (removable >= 0)
+            warnings.splice(removable, 1);
+        else
+            warnings.pop();
+    }
+    warnings.push(warning);
+}
+function safeOverride(value, maxLength) {
+    if (!value?.trim())
+        return undefined;
+    return redactText(value).replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, maxLength) || undefined;
+}
+function roundUsd(value) {
+    return Math.round(value * 1_000_000_000) / 1_000_000_000;
 }
 function sanitizeImportedRun(run, captureMode) {
     const redacted = redactValue(run);
@@ -126,8 +212,10 @@ function extractRecords(value) {
                 request: isRecord(value.request) && isRecord(value.request.body) ? value.request.body : value.request,
                 response: responseWrapper,
                 endpoint: stringValue(value.endpoint) ?? stringValue(value.request?.url),
-                status: numberValue(value.status) ?? numberValue(value.response?.status_code),
-                durationMs: numberValue(value.duration_ms) ?? numberValue(metadata.duration_ms),
+                status: statusValue(value.status, "status") ??
+                    statusValue(value.response?.status_code, "response.status_code"),
+                durationMs: durationValue(value.duration_ms, "duration_ms") ??
+                    durationValue(metadata.duration_ms, "metadata.duration_ms"),
                 capturedAt: stringValue(value.captured_at) ?? stringValue(metadata.captured_at),
                 label: stringValue(value.label) ?? stringValue(metadata.label),
                 promptVersion: stringValue(value.prompt_version) ?? stringValue(metadata.prompt_version),
@@ -196,8 +284,8 @@ function extractHarEntry(entry) {
             request,
             response,
             endpoint: stringValue(entry.request.url),
-            status: isRecord(entry.response) ? numberValue(entry.response.status) : undefined,
-            durationMs: numberValue(entry.time),
+            status: isRecord(entry.response) ? statusValue(entry.response.status, "HAR response.status") : undefined,
+            durationMs: durationValue(entry.time, "HAR entry.time"),
             capturedAt: stringValue(entry.startedDateTime),
         }),
     ];
@@ -213,8 +301,23 @@ function assignString(target, key, value) {
 function stringValue(value) {
     return typeof value === "string" && value.length > 0 ? value : undefined;
 }
-function numberValue(value) {
-    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function statusValue(value, field) {
+    if (value === undefined)
+        return undefined;
+    if (value === null)
+        return null;
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+        return value;
+    throw new Error(`${field} must be null or a finite non-negative integer.`);
+}
+function durationValue(value, field) {
+    if (value === undefined)
+        return undefined;
+    if (value === null)
+        return null;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+        return value;
+    throw new Error(`${field} must be null or a finite non-negative number.`);
 }
 function isRecord(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);

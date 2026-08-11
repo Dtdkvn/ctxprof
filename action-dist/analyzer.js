@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { MAX_PROFILE_COMPONENTS, MAX_PROFILE_RUN_BYTES, MAX_PROFILE_WARNINGS } from "./limits.js";
 import { contentHash, redactText, redactValue } from "./redaction.js";
 import { findPricing } from "./pricing.js";
 import { estimateTokens, stableStringify } from "./tokenizer.js";
@@ -28,7 +29,7 @@ export function analyzeExchange(request, response = null, options = {}) {
     // `none` is the CLI's strongest privacy mode. Component previews contain
     // prompt text too, so omitting only the exchange would be misleading.
     const previewChars = captureMode === "none" ? 0 : Math.max(0, options.previewChars ?? 180);
-    const components = drafts.map((draft, index) => {
+    const detailedComponents = drafts.map((draft, index) => {
         const estimatedTokens = rawEstimates[index] ?? 0;
         const allocatedInputTokens = allocated[index] ?? estimatedTokens;
         // Redact the structured source before serializing it. Redacting `draft.text`
@@ -60,10 +61,16 @@ export function analyzeExchange(request, response = null, options = {}) {
     const outputCost = pricing
         ? roundUsd((outputTokens / 1_000_000) * pricing.outputPerMillionUsd)
         : null;
-    const warnings = buildWarnings(requestRecord, responseRecord, components, pricing);
-    const estimatedWasteTokens = estimateUniqueWaste(warnings);
+    const rawWarnings = buildWarnings(requestRecord, responseRecord, detailedComponents, pricing, providerUsage.invalid);
+    const estimatedWasteTokens = estimateUniqueWaste(rawWarnings);
+    const truncationReasons = [];
+    const components = boundComponents(detailedComponents, pricing, truncationReasons);
+    if (rawWarnings.length > MAX_PROFILE_WARNINGS) {
+        truncationReasons.push(`${rawWarnings.length - (MAX_PROFILE_WARNINGS - 1)} additional warning signals were omitted.`);
+    }
+    const warnings = boundWarnings(rawWarnings, truncationReasons);
     const captured = captureExchange(request, response, captureMode, options.maxCaptureBytes ?? 256 * 1024);
-    return {
+    const run = {
         schemaVersion: SCHEMA_VERSION,
         id: randomUUID(),
         capturedAt: options.capturedAt ?? new Date().toISOString(),
@@ -94,6 +101,77 @@ export function analyzeExchange(request, response = null, options = {}) {
         warnings,
         exchange: captured,
     };
+    return enforceProfileRunSize(run, request, truncationReasons);
+}
+function boundComponents(components, pricing, truncationReasons) {
+    if (components.length <= MAX_PROFILE_COMPONENTS)
+        return [...components];
+    const keepCount = MAX_PROFILE_COMPONENTS - 1;
+    const kept = components.slice(0, keepCount);
+    const omitted = components.slice(keepCount);
+    const estimatedTokens = omitted.reduce((sum, component) => sum + component.estimatedTokens, 0);
+    const allocatedInputTokens = omitted.reduce((sum, component) => sum + component.allocatedInputTokens, 0);
+    const bytes = omitted.reduce((sum, component) => sum + component.bytes, 0);
+    const aggregateHash = contentHash(omitted.map((component) => `${component.kind}:${component.contentHash}`).join("|"));
+    const keptShare = kept.reduce((sum, component) => sum + component.share, 0);
+    kept.push({
+        id: `other-aggregate-${aggregateHash}`,
+        kind: "other",
+        label: `${omitted.length.toLocaleString("en-US")} additional components (aggregated)`,
+        estimatedTokens,
+        allocatedInputTokens,
+        bytes,
+        share: Math.max(0, 1 - keptShare),
+        estimatedCostUsd: pricing
+            ? roundUsd((allocatedInputTokens / 1_000_000) * pricing.inputPerMillionUsd)
+            : null,
+        contentHash: aggregateHash,
+        preview: null,
+    });
+    truncationReasons.push(`${omitted.length.toLocaleString("en-US")} components were combined into one aggregate while token, byte, cost, and content-hash evidence was retained.`);
+    return kept;
+}
+function boundWarnings(warnings, truncationReasons) {
+    const ordinary = warnings.filter((warning) => warning.code !== "analysis-truncated");
+    if (truncationReasons.length === 0 && ordinary.length <= MAX_PROFILE_WARNINGS)
+        return [...ordinary];
+    return [
+        ...ordinary.slice(0, MAX_PROFILE_WARNINGS - 1),
+        {
+            code: "analysis-truncated",
+            severity: "warning",
+            title: "Analysis details were bounded",
+            detail: truncationReasons.join(" "),
+        },
+    ];
+}
+function enforceProfileRunSize(run, request, initialReasons) {
+    if (profileRunBytes(run) <= MAX_PROFILE_RUN_BYTES)
+        return run;
+    const reasons = [...initialReasons, "The stored exchange body was omitted to keep this run within its storage limit."];
+    run.exchange = {
+        request: {
+            notice: "Capture omitted because the normalized run exceeded its storage limit.",
+            contentHash: contentHash(stableStringify(request)),
+        },
+        response: null,
+        captureMode: "redacted",
+        truncated: true,
+    };
+    run.warnings = boundWarnings(run.warnings, reasons);
+    if (profileRunBytes(run) <= MAX_PROFILE_RUN_BYTES)
+        return run;
+    reasons.push("Component previews were omitted to keep the normalized run bounded.");
+    run.components = run.components.map((component) => ({ ...component, preview: null }));
+    run.warnings = boundWarnings(run.warnings, reasons);
+    const bytes = profileRunBytes(run);
+    if (bytes > MAX_PROFILE_RUN_BYTES) {
+        throw new Error(`Normalized ProfileRun is ${bytes} bytes after safe truncation; the limit is ${MAX_PROFILE_RUN_BYTES} bytes.`);
+    }
+    return run;
+}
+function profileRunBytes(run) {
+    return Buffer.byteLength(JSON.stringify(run), "utf8");
 }
 function extractComponents(request) {
     const result = [];
@@ -212,8 +290,16 @@ function messagePreviewSource(message) {
     const content = message.content ?? message.output ?? message.text;
     return content === undefined ? message : content;
 }
-function buildWarnings(request, response, components, pricing) {
+function buildWarnings(request, response, components, pricing, invalidProviderUsage) {
     const warnings = [];
+    if (invalidProviderUsage) {
+        warnings.push({
+            code: "invalid-provider-usage",
+            severity: "warning",
+            title: "Provider usage is invalid",
+            detail: "One or more provider token counts were negative, fractional, non-finite, or outside JavaScript's safe-integer range. Ctxprof ignored those fields and used deterministic estimates instead.",
+        });
+    }
     const allocatedInput = components.reduce((sum, component) => sum + component.allocatedInputTokens, 0);
     const usedTools = collectUsedToolNames(request, response);
     for (const component of components) {
@@ -343,10 +429,13 @@ function toolName(tool) {
 function extractUsage(response) {
     const usage = response && isRecord(response.usage) ? response.usage : null;
     if (!usage)
-        return { inputTokens: null, outputTokens: null };
+        return { inputTokens: null, outputTokens: null, invalid: false };
+    const input = firstSafeTokenCount(usage.prompt_tokens, usage.input_tokens);
+    const output = firstSafeTokenCount(usage.completion_tokens, usage.output_tokens);
     return {
-        inputTokens: firstFiniteNumber(usage.prompt_tokens, usage.input_tokens),
-        outputTokens: firstFiniteNumber(usage.completion_tokens, usage.output_tokens),
+        inputTokens: input.value,
+        outputTokens: output.value,
+        invalid: input.invalid || output.invalid,
     };
 }
 function estimateResponseTokens(response) {
@@ -425,12 +514,17 @@ function firstString(...values) {
     }
     return "unknown";
 }
-function firstFiniteNumber(...values) {
+function firstSafeTokenCount(...values) {
+    let invalid = false;
     for (const value of values) {
-        if (typeof value === "number" && Number.isFinite(value) && value >= 0)
-            return Math.round(value);
+        if (value === undefined || value === null)
+            continue;
+        if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+            return { value, invalid };
+        }
+        invalid = true;
     }
-    return null;
+    return { value: null, invalid };
 }
 function isRecord(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);

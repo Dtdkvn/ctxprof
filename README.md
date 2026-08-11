@@ -73,7 +73,7 @@ const client = new OpenAI({
 
 The optional headers are consumed locally, persisted as the bounded `label` and `promptVersion` fields, and not forwarded upstream. Do not put secrets in them. An incoming `Authorization` header takes precedence over `OPENAI_API_KEY`; neither credential is persisted.
 
-Open the live dashboard at the same origin, or export a portable report:
+Open the live dashboard at the same origin; it polls the bounded local store while visible and shows new captures without a reload. Or export a portable report:
 
 ```bash
 ctxprof report --output context-report.html
@@ -89,6 +89,8 @@ ctxprof proxy --upstream http://127.0.0.1:1234/v1
 ```
 
 The upstream deadline defaults to two minutes and can be changed with `--upstream-timeout-ms` or `CTXPROF_UPSTREAM_TIMEOUT_MS`. Redirects are never followed.
+
+Request headers cross a strict positive allowlist: `Authorization`, JSON content metadata, `Accept`, `User-Agent`, `Idempotency-Key`, OpenAI headers, Stainless SDK metadata, and exact Anthropic/Azure/Google auth, version, beta, and project headers. Everything else is dropped by default, including arbitrary identity-proxy headers. A custom provider header requires an explicit repeatable `--forward-header <name>` opt-in; only add one after reviewing the provider contract because its value leaves the machine.
 
 For deliberate team access behind an authenticated reverse proxy, allow both the remote bind and its exact public hostname:
 
@@ -148,7 +150,7 @@ ctxprof check --update-baseline
 ctxprof check
 ```
 
-The check exits `1` and explains every violated metric. A cost limit also fails when pricing is unknown; silently treating unknown cost as zero would make the gate unsafe.
+The check exits `1` and explains every violated metric. Explicit config paths must exist, and regression thresholds require a loaded baseline. A cost limit also fails when pricing is unknown; silently treating unknown cost as zero would make the gate unsafe.
 
 ### GitHub Action
 

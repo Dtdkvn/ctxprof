@@ -15,10 +15,10 @@ export function metricsForRuns(runs) {
         if (!isProfileRun(named.run)) {
             throw new Error(`Invalid ProfileRun â€œ${named.name}â€: metrics are not finite and internally consistent.`);
         }
-        let name = named.name;
-        let suffix = 2;
-        while (Object.hasOwn(cases, name))
-            name = `${named.name}#${suffix++}`;
+        const name = named.name;
+        if (Object.hasOwn(cases, name)) {
+            throw new Error(`Duplicate context budget case name “${name}”. Use stable path-qualified names.`);
+        }
         const components = emptyComponents();
         if (!Array.isArray(named.run.components) || !Array.isArray(named.run.warnings)) {
             throw new Error(`Invalid ProfileRun “${named.name}”: components and warnings must be arrays.`);
@@ -68,7 +68,7 @@ export function evaluateBudget(cases, config, baseline) {
             });
         }
     }
-    if (baseline) {
+    if (baseline && hasRegressionLimits(config)) {
         for (const caseName of Object.keys(baseline.cases)) {
             if (!cases[caseName]) {
                 violations.push({

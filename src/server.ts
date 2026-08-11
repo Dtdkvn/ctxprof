@@ -12,6 +12,7 @@ import { performance } from "node:perf_hooks";
 import { brotliDecompress, gunzip, inflate } from "node:zlib";
 import { analyzeExchange } from "./analyzer.js";
 import { compareVersions } from "./compare.js";
+import { MAX_PROFILE_WARNINGS, MAX_PROXY_REQUEST_BYTES } from "./limits.js";
 import { redactText, safeError } from "./redaction.js";
 import { RunStore } from "./store.js";
 import type { PricingRecord, ProfileRun } from "./types.js";
@@ -25,6 +26,7 @@ export interface ServerOptions {
   apiKey?: string;
   allowRemote?: boolean;
   allowedHosts?: readonly string[];
+  forwardHeaders?: readonly string[];
   upstreamTimeoutMs?: number;
   captureMode?: "none" | "redacted";
   pricing?: PricingRecord[];
@@ -71,6 +73,19 @@ const PRIVATE_PROXY_HEADERS = new Set([
   "x-original-uri",
   "x-real-ip",
 ]);
+const DEFAULT_FORWARD_REQUEST_HEADERS = new Set([
+  "accept",
+  "anthropic-beta",
+  "anthropic-version",
+  "api-key",
+  "authorization",
+  "content-type",
+  "idempotency-key",
+  "user-agent",
+  "x-api-key",
+  "x-goog-api-key",
+  "x-goog-user-project",
+]);
 const MAX_RESPONSE_CAPTURE_BYTES = 5 * 1024 * 1024;
 const MAX_DECOMPRESSED_CAPTURE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 120_000;
@@ -80,6 +95,7 @@ type ResolvedServerOptions = ServerOptions & {
   port: number;
   store: RunStore;
   allowedHostnames: ReadonlySet<string>;
+  forwardedRequestHeaders: ReadonlySet<string>;
   upstreamTimeoutMs: number;
 };
 
@@ -88,6 +104,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const requestedPort = options.port ?? 8787;
   const upstreamTimeoutMs = options.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
   const allowedHostnames = new Set((options.allowedHosts ?? []).map(normalizeAllowedHostname));
+  const forwardedRequestHeaders = new Set((options.forwardHeaders ?? []).map(normalizeForwardHeaderName));
   if (!isLoopback(host) && !options.allowRemote) {
     throw new Error(
       `Refusing to bind to ${host}. Ctxprof contains prompt data; pass --allow-remote only behind a trusted network boundary.`,
@@ -106,6 +123,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       port: requestedPort,
       store,
       allowedHostnames,
+      forwardedRequestHeaders,
       upstreamTimeoutMs,
     }).catch((error) => {
       if (!response.headersSent) json(response, 500, { error: "Internal error", detail: safeError(error) });
@@ -146,7 +164,10 @@ async function route(
   }
   const requestUrl = new URL(request.url ?? "/", "http://ctxprof.local");
   if (request.method === "GET" && requestUrl.pathname === "/") {
-    html(response, 200, renderDashboard([], { live: true, title: "Ctxprof · live context profile" }));
+    html(response, 200, renderDashboard([], {
+      mode: options.upstream ? "proxy" : "store",
+      title: "Ctxprof · live context profile",
+    }));
     return;
   }
   if (request.method === "GET" && requestUrl.pathname === "/healthz") {
@@ -202,7 +223,7 @@ async function proxyRequest(
   }
   let rawRequest: Buffer;
   try {
-    rawRequest = await readBody(request, 20 * 1024 * 1024);
+    rawRequest = await readBody(request, MAX_PROXY_REQUEST_BYTES);
   } catch (error) {
     if (error instanceof BodyTooLargeError) {
       json(response, 413, { error: error.message });
@@ -219,7 +240,12 @@ async function proxyRequest(
   }
   const started = performance.now();
   const upstreamUrl = makeUpstreamUrl(options.upstream ?? "", requestUrl);
-  const headers = forwardRequestHeaders(request.headers, options.apiKey, rawRequest.length);
+  const headers = forwardRequestHeaders(
+    request.headers,
+    options.apiKey,
+    rawRequest.length,
+    options.forwardedRequestHeaders,
+  );
   const label = headerValue(request.headers["x-ctxprof-label"]) ?? options.defaultLabel;
   const promptVersion =
     headerValue(request.headers["x-ctxprof-version"]) ?? options.defaultPromptVersion;
@@ -349,7 +375,7 @@ async function recordRun(request: unknown, response: unknown, record: RecordOpti
           : roundUsd(run.totals.estimatedInputCostUsd + run.totals.estimatedOutputCostUsd);
       }
     }
-    run.warnings.push({
+    appendBoundedWarning(run, {
       code: "truncated-response",
       severity: "warning",
       title: "Response capture is incomplete",
@@ -366,6 +392,16 @@ async function recordRun(request: unknown, response: unknown, record: RecordOpti
       `captured ${run.model} · ${tokens.toLocaleString()} input tok · ${run.durationMs ?? 0} ms · ${run.promptVersion}\n`,
     );
   }
+}
+
+function appendBoundedWarning(run: ProfileRun, warning: ProfileRun["warnings"][number]): void {
+  if (run.warnings.length >= MAX_PROFILE_WARNINGS) {
+    const protectedWarning = run.warnings.find((entry) => entry.code === "analysis-truncated");
+    const ordinary = run.warnings.filter((entry) => entry !== protectedWarning);
+    run.warnings = ordinary.slice(0, MAX_PROFILE_WARNINGS - (protectedWarning ? 2 : 1));
+    if (protectedWarning) run.warnings.push(protectedWarning);
+  }
+  run.warnings.push(warning);
 }
 
 async function recordRunSafely(request: unknown, response: unknown, record: RecordOptions): Promise<void> {
@@ -572,7 +608,7 @@ function hasProviderUsage(value: unknown): boolean {
       : null;
   if (!usage) return false;
   return ["completion_tokens", "output_tokens"].some(
-    (key) => typeof usage[key] === "number" && Number.isFinite(usage[key]) && Number(usage[key]) >= 0,
+    (key) => typeof usage[key] === "number" && Number.isSafeInteger(usage[key]) && Number(usage[key]) >= 0,
   );
 }
 
@@ -670,6 +706,7 @@ function forwardRequestHeaders(
   headers: IncomingHttpHeaders,
   apiKey: string | undefined,
   contentLength: number,
+  additionalHeaders: ReadonlySet<string>,
 ): Headers {
   const outgoing = new Headers();
   const connectionHeaders = new Set(
@@ -684,7 +721,8 @@ function forwardRequestHeaders(
       isPrivateProxyHeader(lower) ||
       lower === "accept-encoding" ||
       lower === "content-encoding" ||
-      lower === "content-length"
+      lower === "content-length" ||
+      !isAllowedForwardHeader(lower, additionalHeaders)
     ) continue;
     if (rawValue !== undefined) outgoing.set(name, Array.isArray(rawValue) ? rawValue.join(", ") : rawValue);
   }
@@ -693,6 +731,13 @@ function forwardRequestHeaders(
   outgoing.set("content-length", String(contentLength));
   outgoing.set("accept-encoding", "identity");
   return outgoing;
+}
+
+function isAllowedForwardHeader(lower: string, additionalHeaders: ReadonlySet<string>): boolean {
+  return DEFAULT_FORWARD_REQUEST_HEADERS.has(lower) ||
+    lower.startsWith("openai-") ||
+    lower.startsWith("x-stainless-") ||
+    additionalHeaders.has(lower);
 }
 
 function isPrivateProxyHeader(lower: string): boolean {
@@ -707,6 +752,25 @@ function isPrivateProxyHeader(lower: string): boolean {
     lower.startsWith("x-ms-client-principal-") ||
     lower.startsWith("x-ms-token-") ||
     lower.startsWith("sec-");
+}
+
+function normalizeForwardHeaderName(value: string): string {
+  const lower = value.trim().toLowerCase();
+  if (!lower || !/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(lower)) {
+    throw new Error("forwardHeaders entries must be exact HTTP header names.");
+  }
+  if (
+    HOP_BY_HOP.has(lower) ||
+    lower.startsWith("x-ctxprof-") ||
+    isPrivateProxyHeader(lower) ||
+    lower === "accept-encoding" ||
+    lower === "content-encoding" ||
+    lower === "content-length" ||
+    lower === "set-cookie"
+  ) {
+    throw new Error(`Refusing to opt in unsafe forwarded header: ${lower}.`);
+  }
+  return lower;
 }
 
 function copyResponseHeaders(headers: IncomingHttpHeaders, response: ServerResponse): void {
@@ -928,6 +992,7 @@ function protocolHeaderValue(value: string | string[] | undefined): string | und
 }
 
 function clampInteger(value: string | null, min: number, max: number, fallback: number): number {
+  if (value === null || value.trim() === "") return fallback;
   const number = Number(value);
   return Number.isInteger(number) ? Math.min(max, Math.max(min, number)) : fallback;
 }

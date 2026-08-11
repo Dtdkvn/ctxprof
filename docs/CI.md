@@ -6,7 +6,7 @@ A context budget catches accidental prompt growth before it compounds across req
 
 Commit synthetic or approved sanitized JSON under an `evals/` directory. Each file may contain a raw request, a `{ request, response }` wrapper, JSONL cases, or a sanitized HAR. Provider usage in a fixture becomes the displayed total; component breakdowns remain deterministic estimates.
 
-Keep case filenames stable. Baselines match cases by filename (and `#N` suffix for multi-record files).
+Keep case paths stable. Baselines use a friendly basename when unique, a normalized config-relative path when basenames collide, and a `#N` suffix for multi-record files.
 
 ## 2. Configure limits
 
@@ -36,6 +36,8 @@ npx ctxprof check
 ```
 
 Exit code `0` means every case passed. Exit code `1` means at least one hard limit, regression limit, missing case, or required price check failed. `--json` returns structured metrics and violations.
+
+Baseline case IDs use the friendly basename when it is unique. If two inputs share a basename, Ctxprof uses a normalized config-directory-relative path (for example `prompts/a/case.json`) so reordering inputs cannot swap baseline identities; duplicate exact inputs are rejected.
 
 For GitHub-hosted workflows, use the Node 24 JavaScript Action in [examples/github-actions/context-budget.yml](../examples/github-actions/context-budget.yml). It runs its checked-in JavaScript without downloading dependencies, compiling, or depending on the caller's `node` executable. `--github` emits `::error` annotations if you invoke the CLI directly.
 

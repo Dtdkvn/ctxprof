@@ -15,7 +15,7 @@ export async function writeHtmlReport(runs, outputPath, title = "Ctxprof context
             truncated: run.exchange.truncated,
         },
     }));
-    const html = renderDashboard(reportRuns, { live: false, title });
+    const html = renderDashboard(reportRuns, { mode: "static", title });
     await writeFile(absolute, html, { encoding: "utf8", mode: 0o600 });
     try {
         await chmod(absolute, 0o600);

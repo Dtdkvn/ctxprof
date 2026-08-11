@@ -16,6 +16,8 @@ export type WarningCode =
   | "context-pressure"
   | "unknown-pricing"
   | "large-tool-schema"
+  | "invalid-provider-usage"
+  | "analysis-truncated"
   | "truncated-response";
 
 export interface ContextComponent {

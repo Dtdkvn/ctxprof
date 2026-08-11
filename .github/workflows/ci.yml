@@ -64,7 +64,8 @@ jobs:
             ctxprof:test serve --host 0.0.0.0 --port 8787 --allow-remote --data /data)"
           trap 'docker rm --force --volumes "$container" >/dev/null 2>&1 || true' EXIT
           test "$(docker inspect --format '{{.Config.User}}' "$container")" = "node"
-          docker exec "$container" sh -c '! command -v npm && ! command -v corepack'
+          docker exec "$container" sh -c \
+            '! command -v npm && ! command -v npx && ! command -v corepack && ! command -v yarn && ! command -v yarnpkg'
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8787/healthz >/dev/null; then break; fi
             if [ "$attempt" = 30 ]; then docker logs "$container"; exit 1; fi

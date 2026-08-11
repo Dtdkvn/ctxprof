@@ -1,5 +1,6 @@
 import { appendFile, chmod, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { MAX_PROFILE_COMPONENTS, MAX_PROFILE_RUN_BYTES, MAX_PROFILE_WARNINGS } from "./limits.js";
 const COMPONENT_KINDS = new Set(["system", "developer", "tools", "message", "tool_result", "other"]);
 const WARNING_CODES = new Set([
     "unused-tool",
@@ -9,6 +10,8 @@ const WARNING_CODES = new Set([
     "context-pressure",
     "unknown-pricing",
     "large-tool-schema",
+    "invalid-provider-usage",
+    "analysis-truncated",
     "truncated-response",
 ]);
 const WARNING_SEVERITIES = new Set(["info", "warning", "critical"]);
@@ -27,8 +30,9 @@ export class RunStore {
     }
     async append(run) {
         await this.init();
+        const payload = serializeRun(run);
         await this.enqueue(async () => {
-            await appendFile(this.runsFile, `${JSON.stringify(run)}\n`, { encoding: "utf8", mode: 0o600 });
+            await appendFile(this.runsFile, `${payload}\n`, { encoding: "utf8", mode: 0o600 });
             await bestEffortChmod(this.runsFile, 0o600);
         });
     }
@@ -36,13 +40,18 @@ export class RunStore {
         if (runs.length === 0)
             return;
         await this.init();
-        const payload = runs.map((run) => JSON.stringify(run)).join("\n") + "\n";
+        const payload = runs.map(serializeRun).join("\n") + "\n";
         await this.enqueue(async () => {
             await appendFile(this.runsFile, payload, { encoding: "utf8", mode: 0o600 });
             await bestEffortChmod(this.runsFile, 0o600);
         });
     }
     async list(limit = 1_000) {
+        if (!Number.isSafeInteger(limit) || limit < 0) {
+            throw new Error("RunStore.list limit must be a non-negative safe integer.");
+        }
+        if (limit === 0)
+            return [];
         await this.writeQueue;
         let contents;
         try {
@@ -54,20 +63,32 @@ export class RunStore {
             throw error;
         }
         const runs = [];
-        for (const line of contents.split(/\r?\n/)) {
-            if (!line.trim())
-                continue;
-            try {
-                const value = JSON.parse(line);
-                if (isProfileRun(value))
-                    runs.push(value);
-            }
-            catch {
-                // A process may have stopped during the last append. JSONL recovery is
-                // deliberately tolerant; valid preceding records remain usable.
+        const lines = contents.split(/\r?\n/);
+        let lastNonemptyIndex = -1;
+        for (let index = lines.length - 1; index >= 0; index -= 1) {
+            if (lines[index]?.trim()) {
+                lastNonemptyIndex = index;
+                break;
             }
         }
-        return runs.slice(-Math.max(0, limit)).reverse();
+        for (const [index, line] of lines.entries()) {
+            if (!line.trim())
+                continue;
+            let value;
+            try {
+                value = JSON.parse(line);
+            }
+            catch (error) {
+                if (index === lastNonemptyIndex)
+                    break;
+                throw new Error(`Invalid JSON in ${this.runsFile}:${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            if (!isProfileRun(value)) {
+                throw new Error(`Invalid ProfileRun in ${this.runsFile}:${index + 1}.`);
+            }
+            runs.push(value);
+        }
+        return runs.slice(-limit).reverse();
     }
     async sizeBytes() {
         try {
@@ -106,9 +127,11 @@ export function isProfileRun(value) {
         !isPricing(run.pricing) ||
         !Array.isArray(run.components) ||
         run.components.length === 0 ||
+        run.components.length > MAX_PROFILE_COMPONENTS ||
         !run.components.every(isComponent) ||
         !isTotals(run.totals) ||
         !Array.isArray(run.warnings) ||
+        run.warnings.length > MAX_PROFILE_WARNINGS ||
         !run.warnings.every(isWarning) ||
         !isExchange(run.exchange)) {
         return false;
@@ -123,7 +146,33 @@ export function isProfileRun(value) {
         allocated === displayedInput &&
         totals.totalTokens === Number(displayedInput) + Number(totals.outputTokens) &&
         Math.abs(share - 1) < 1e-6 &&
-        isCostConsistent(run, Number(displayedInput)));
+        isCostConsistent(run, Number(displayedInput)) &&
+        isWithinSerializedRunLimit(run));
+}
+function isWithinSerializedRunLimit(run) {
+    try {
+        return Buffer.byteLength(JSON.stringify(run), "utf8") <= MAX_PROFILE_RUN_BYTES;
+    }
+    catch {
+        return false;
+    }
+}
+function serializeRun(run) {
+    let serialized;
+    try {
+        serialized = JSON.stringify(run);
+    }
+    catch {
+        throw new Error("Refusing to store an invalid ProfileRun.");
+    }
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    if (bytes > MAX_PROFILE_RUN_BYTES) {
+        throw new Error(`Refusing to store a ${bytes}-byte ProfileRun; the limit is ${MAX_PROFILE_RUN_BYTES} bytes.`);
+    }
+    if (!isProfileRun(run)) {
+        throw new Error("Refusing to store an invalid ProfileRun.");
+    }
+    return serialized;
 }
 function isCostConsistent(run, displayedInput) {
     const totals = run.totals;
@@ -224,7 +273,7 @@ function isNonnegativeNumber(value) {
     return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 function isNonnegativeInteger(value) {
-    return isNonnegativeNumber(value) && Number.isInteger(value);
+    return isNonnegativeNumber(value) && Number.isSafeInteger(value);
 }
 function isPositiveInteger(value) {
     return isNonnegativeInteger(value) && value > 0;

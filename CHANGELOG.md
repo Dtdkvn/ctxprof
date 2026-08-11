@@ -4,15 +4,6 @@ All notable changes will be documented here. Ctxprof follows [Semantic Versionin
 
 ## [Unreleased]
 
-### Fixed
-
-- Hardened proxy Host/Origin boundaries, identity-header filtering, response encoding, abort propagation, and bounded stream accounting.
-- Made redaction structure-aware, removed previews from `--capture none`, and covered common camelCase secret keys.
-- Made normalized-run validation and budget metrics fail closed, and made component allocation exactly preserve provider totals.
-- Upgraded supported runtimes to maintained Node.js 22/24 releases.
-- Shipped an offline prebuilt GitHub Action, hardened release provenance/trusted publishing, and pinned Actions and container images.
-- Completed CLI help and npm tarball documentation assets.
-
 ### Roadmap
 
 - Pluggable exact tokenizers without making the safe offline core dependent on native modules.
@@ -21,15 +12,19 @@ All notable changes will be documented here. Ctxprof follows [Semantic Versionin
 - Anthropic native Messages and Google Gemini native import adapters; proxy mode remains OpenAI-compatible first.
 - Signed, reproducible standalone report artifacts.
 
-## [0.1.0] - 2026-08-11
+## [0.1.0] - 2026-08-12
 
 ### Added
 
-- OpenAI-compatible Chat Completions and Responses proxy with JSON and SSE pass-through.
+- OpenAI-compatible Chat Completions and Responses proxy with JSON/SSE pass-through, strict Host/Origin boundaries, a positive upstream-header allowlist, raw encoding preservation, abort propagation, deadlines, bounded request/stream accounting, and a polling live dashboard.
 - Local interactive treemap, component details, cost insights, and explainable waste warnings.
-- JSON, JSONL, HAR, OpenAI Batch, and normalized-run import workflows.
+- JSON, JSONL, HAR, OpenAI Batch, and normalized-run imports with strict metadata/schema validation, explicit overrides, safe repricing, and interrupted-final-record recovery.
 - Prompt-version A/B aggregation and CLI diff.
-- Context budget test with absolute limits, committed baselines, component regressions, exit codes, and GitHub annotations.
-- Redacted or metadata-only capture, bounded append-only JSONL store, and loopback-only default.
+- Fail-closed context budget test with absolute limits, required committed baselines for regressions, stable path-qualified collision identities, exit codes, and GitHub annotations.
+- Structure-aware secret redaction, preview-free metadata-only capture, a bounded append-only JSONL store, and loopback-only default.
 - Dated exact-match OpenAI standard text pricing plus custom provider catalogs.
-- Deterministic no-key demo, fixture suite, mock upstream integration test, Docker/Compose, and composite GitHub Action.
+- Deterministic no-key demo, fixture suite, mock-upstream integration tests, hardened non-root Docker/Compose, and an offline prebuilt Node 24 GitHub Action.
+- Maintained Node.js 22/24 support, complete CLI help and npm tarball assets, SHA-pinned CI, trusted publishing, and verified release provenance.
+
+[Unreleased]: https://github.com/yewud/ctxprof/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/yewud/ctxprof/releases/tag/v0.1.0

@@ -14,7 +14,7 @@ sequenceDiagram
   participant UI as Dashboard / CI
 
   App->>Proxy: JSON request + Authorization
-  Proxy->>API: unchanged JSON + forwarded headers
+  Proxy->>API: unchanged JSON + allowlisted provider headers
   API-->>Proxy: JSON or SSE stream
   Proxy-->>App: response bytes
   Proxy->>Profile: bounded in-memory request/response copy
@@ -74,7 +74,7 @@ Component allocation preserves the provider input total: each estimated componen
 
 ## Persistence
 
-The store is newline-delimited JSON rather than SQLite because the expected local workload is append-heavy, single-process, and easy to inspect or delete. Every append is serialized through an in-process promise queue. Readers skip an invalid trailing line so a terminated write does not hide earlier captures.
+The store is newline-delimited JSON rather than SQLite because the expected local workload is append-heavy, single-process, and easy to inspect or delete. Every append is serialized through an in-process promise queue. Component, warning, and serialized-run ceilings prevent small inputs from amplifying into unbounded dashboard records. Readers tolerate only an invalid final line from an interrupted append; corruption in any earlier record fails with its file and line number.
 
 JSONL is not intended for multiple writers, large shared teams, retention policies, or distributed tracing. A future store interface can add SQLite without changing `ProfileRun`.
 

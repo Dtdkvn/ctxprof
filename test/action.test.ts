@@ -18,3 +18,20 @@ test("the Node 24 Action entrypoint runs the budget without an install step", ()
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
   assert.match(result.stdout, /Context budget passed/);
 });
+
+test("the Action fails closed when its explicit config input is missing", () => {
+  const missing = path.resolve("test/fixtures/does-not-exist.json");
+  const result = spawnSync(process.execPath, [path.resolve(".test-dist/src/action.js")], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      INPUT_CONFIG: missing,
+      INPUT_PRICING: "",
+      NODE_ENV: "production",
+    },
+  });
+  assert.equal(result.status, 1, `${result.stderr}\n${result.stdout}`);
+  assert.match(`${result.stdout}\n${result.stderr}`, /Budget config not found/);
+  assert.match(result.stdout, /::error title=Ctxprof action failed/);
+});

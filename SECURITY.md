@@ -20,7 +20,7 @@ Maintainers should acknowledge a complete report within three business days, pro
 - Ordinary headers are used only for forwarding and are never included in a `ProfileRun`. The explicit `x-ctxprof-label` and `x-ctxprof-version` values are converted to bounded, redacted run metadata and are not forwarded.
 - `Authorization` and `OPENAI_API_KEY` values are never printed.
 - Stored exchange bodies pass through recursive key-based and pattern-based secret redaction.
-- Stored strings and full exchanges have bounds; a body over the capture limit is replaced by a one-way content hash and notice.
+- Proxy requests are capped at 5 MiB. Normalized components, warnings, and serialized runs have hard bounds; omitted detail is represented by an aggregate hash and explicit warning, and an exchange over the storage limit is replaced by a one-way content hash and notice.
 - `--capture none` omits request/response bodies and all component previews while keeping component metrics and short hashes.
 - Store files use owner-only POSIX modes where the filesystem supports them.
 - The browser UI has no third-party scripts, styles, fonts, analytics, or telemetry.
@@ -52,7 +52,7 @@ Maintainers should acknowledge a complete report within three business days, pro
 
 Every request must use an allowed Host; wildcard remote binds accept only literal local/socket IPs and localhost unless an exact `--allowed-host` is configured. Browser requests with an Origin must also be same-origin. These checks reduce DNS-rebinding exposure but do not add authentication.
 
-The proxy accepts JSON POSTs below `/v1/`, forwards an intentionally filtered set of ordinary request headers, removes proxy-identity and `x-ctxprof-*` headers, and strips upstream `Set-Cookie` from the response. It does not log query strings or bodies. The configured upstream origin is printed without credentials. The upstream deadline defaults to 120 seconds and is configurable with `--upstream-timeout-ms` or `CTXPROF_UPSTREAM_TIMEOUT_MS`.
+The proxy accepts JSON POSTs below `/v1/` and forwards request headers through a positive allowlist: authorization, JSON content metadata, `Accept`, `User-Agent`, `Idempotency-Key`, `OpenAI-*`, Stainless SDK metadata, and exact Anthropic/Azure/Google auth, version, beta, and project headers. All other incoming headers are dropped by default, so new CDN or identity-proxy headers cannot silently cross the provider boundary. A repeatable `--forward-header <name>` is a deliberate custom-provider opt-in; unsafe hop-by-hop, forwarding, browser, and Ctxprof metadata names are rejected. Treat every opted-in value as data disclosed to the upstream. Responses strip `Set-Cookie`. The proxy does not log query strings or bodies, and the configured upstream origin is printed without credentials. The upstream deadline defaults to 120 seconds and is configurable with `--upstream-timeout-ms` or `CTXPROF_UPSTREAM_TIMEOUT_MS`.
 
 Redirects are not followed. TLS validation is delegated to Node's standard HTTPS client. Do not disable TLS verification in production.
 

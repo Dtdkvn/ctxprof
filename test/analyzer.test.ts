@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeExchange } from "../src/analyzer.js";
+import { MAX_PROFILE_COMPONENTS, MAX_PROFILE_RUN_BYTES, MAX_PROFILE_WARNINGS } from "../src/limits.js";
+import { isProfileRun } from "../src/store.js";
 
 test("attributes chat context and allocates provider totals", () => {
   const run = analyzeExchange(
@@ -100,6 +102,45 @@ test("preserves provider totals across many rounded components", () => {
     0,
   );
   assert.ok(Math.abs(componentCost - (run.totals.estimatedInputCostUsd ?? 0)) < 1e-12);
+});
+
+test("ignores unsafe or overflowing provider token counts", () => {
+  for (const unsafe of [1e20, 1e308]) {
+    const run = analyzeExchange(
+      { model: "gpt-5", messages: [{ role: "user", content: "Hello" }] },
+      { usage: { prompt_tokens: unsafe, completion_tokens: unsafe } },
+    );
+    assert.equal(run.totals.providerInputTokens, null);
+    assert.equal(Number.isSafeInteger(run.totals.totalTokens), true);
+    assert.equal(Number.isFinite(run.totals.estimatedTotalCostUsd), true);
+    assert.equal(run.warnings.some((warning) => warning.code === "invalid-provider-usage"), true);
+  }
+});
+
+test("bounds adversarial component and warning amplification without losing totals", () => {
+  const run = analyzeExchange(
+    {
+      model: "custom-model",
+      messages: [{ role: "user", content: "small prompt" }],
+      tools: Array.from({ length: 20_000 }, () => null),
+    },
+    null,
+    { captureMode: "none" },
+  );
+
+  assert.equal(isProfileRun(run), true);
+  assert.equal(run.components.length, MAX_PROFILE_COMPONENTS);
+  assert.ok(run.warnings.length <= MAX_PROFILE_WARNINGS);
+  assert.equal(
+    run.warnings.filter((warning) => warning.code === "analysis-truncated").length,
+    1,
+  );
+  assert.match(run.components.at(-1)?.label ?? "", /additional components \(aggregated\)/);
+  assert.equal(
+    run.components.reduce((sum, component) => sum + component.estimatedTokens, 0),
+    run.totals.estimatedInputTokens,
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(run), "utf8") <= MAX_PROFILE_RUN_BYTES);
 });
 
 test("treats an existing tool result as evidence that the tool was used", () => {

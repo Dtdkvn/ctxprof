@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm, stat } from "node:fs/promises";
+import { isIP } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,18 +15,96 @@ import { safeError } from "./redaction.js";
 import { startServer } from "./server.js";
 import { RunStore } from "./store.js";
 const VERSION = "0.1.0";
+const MINIMUM_NODE_MAJOR = 22;
 const BOOLEAN_OPTIONS = new Set(["help", "json", "allow-remote", "update-baseline", "github"]);
-const COMMAND_OPTIONS = {
+export const COMMAND_OPTIONS = {
     analyze: optionSet("help", "json", "pricing", "capture", "label", "prompt-version", "model", "report"),
     import: optionSet("help", "data", "pricing", "capture", "label", "prompt-version", "model"),
-    proxy: optionSet("help", "data", "pricing", "capture", "host", "port", "upstream", "upstream-timeout-ms", "allow-remote", "allowed-host", "label", "prompt-version"),
-    serve: optionSet("help", "data", "pricing", "capture", "host", "port", "allow-remote", "allowed-host", "label", "prompt-version"),
+    proxy: optionSet("help", "data", "pricing", "capture", "host", "port", "upstream", "upstream-timeout-ms", "allow-remote", "allowed-host", "forward-header", "label", "prompt-version"),
+    serve: optionSet("help", "data", "pricing", "host", "port", "allow-remote", "allowed-host", "label", "prompt-version"),
     report: optionSet("help", "data", "output", "title", "limit"),
     compare: optionSet("help", "data", "from", "to", "json"),
     check: optionSet("help", "json", "pricing", "config", "baseline", "update-baseline", "max-input-tokens", "max-total-tokens", "max-cost", "max-warnings", "token-regression", "total-regression", "cost-regression", "component-regression", "github"),
     demo: optionSet("help", "data", "pricing", "output"),
     pricing: optionSet("help", "json", "pricing"),
-    doctor: optionSet("help", "data"),
+    doctor: optionSet("help", "data", "host", "allow-remote"),
+};
+const COMMAND_HELP = {
+    analyze: {
+        usage: "ctxprof analyze <files...> [options]",
+        summary: "Profile HAR, JSON, or JSONL exchanges without saving them.",
+    },
+    import: {
+        usage: "ctxprof import <files...> [options]",
+        summary: "Normalize captures and append them to the local run store.",
+    },
+    proxy: {
+        usage: "ctxprof proxy [options]",
+        summary: "Run the recording proxy and polling live dashboard.",
+    },
+    serve: {
+        usage: "ctxprof serve [options]",
+        summary: "Serve the polling local capture dashboard without an upstream proxy.",
+    },
+    report: {
+        usage: "ctxprof report [options]",
+        summary: "Export recent stored captures as a self-contained HTML report.",
+    },
+    compare: {
+        usage: "ctxprof compare <from-version> <to-version> [options]",
+        summary: "Compare aggregate metrics for two prompt versions.",
+    },
+    check: {
+        usage: "ctxprof check [files...] [options]",
+        summary: "Fail CI when context tokens, cost, warnings, or components exceed configured limits.",
+    },
+    demo: {
+        usage: "ctxprof demo [options]",
+        summary: "Write deterministic local captures and an HTML report without an API key.",
+    },
+    pricing: {
+        usage: "ctxprof pricing [options]",
+        summary: "Show the dated built-in pricing catalog plus optional exact overrides.",
+    },
+    doctor: {
+        usage: "ctxprof doctor [options]",
+        summary: "Validate the runtime, storage target, capture policy, and bind safety.",
+    },
+};
+const OPTION_HELP = {
+    help: { syntax: "--help", description: "Show this command help" },
+    json: { syntax: "--json", description: "Write machine-readable JSON" },
+    pricing: { syntax: "--pricing <file>", description: "Exact custom model pricing JSON" },
+    capture: { syntax: "--capture redacted|none", description: "Stored body policy (default redacted)" },
+    label: { syntax: "--label <text>", description: "Override bounded run label metadata" },
+    "prompt-version": { syntax: "--prompt-version <text>", description: "Override bounded prompt-version metadata" },
+    model: { syntax: "--model <id>", description: "Override the exact model identifier" },
+    report: { syntax: "--report <file>", description: "Also write a self-contained HTML report" },
+    data: { syntax: "--data <dir>", description: "Store directory (default .ctxprof)" },
+    host: { syntax: "--host <address>", description: "Bind address (default 127.0.0.1)" },
+    port: { syntax: "--port <0..65535>", description: "Listen port; 0 requests an ephemeral port" },
+    upstream: { syntax: "--upstream <url>", description: "OpenAI-compatible http(s) upstream URL" },
+    "upstream-timeout-ms": { syntax: "--upstream-timeout-ms <n>", description: "Positive integer upstream deadline" },
+    "allow-remote": { syntax: "--allow-remote", description: "Permit a non-loopback bind" },
+    "allowed-host": { syntax: "--allowed-host <hostname>", description: "Allow an exact reverse-proxy Host (repeatable)" },
+    "forward-header": { syntax: "--forward-header <name>", description: "Opt in one extra upstream header (repeatable)" },
+    output: { syntax: "--output <path>", description: "Output file or directory" },
+    title: { syntax: "--title <text>", description: "HTML report title" },
+    limit: { syntax: "--limit <1..5000>", description: "Maximum recent stored runs" },
+    from: { syntax: "--from <version>", description: "Source prompt version" },
+    to: { syntax: "--to <version>", description: "Target prompt version" },
+    config: { syntax: "--config <file>", description: "Budget config (default ctxprof.config.json)" },
+    baseline: { syntax: "--baseline <file>", description: "Override baseline path" },
+    "update-baseline": { syntax: "--update-baseline", description: "Write the current metrics as baseline" },
+    "max-input-tokens": { syntax: "--max-input-tokens <n>", description: "Absolute input-token ceiling" },
+    "max-total-tokens": { syntax: "--max-total-tokens <n>", description: "Absolute input + output-token ceiling" },
+    "max-cost": { syntax: "--max-cost <usd>", description: "Absolute estimated-cost ceiling" },
+    "max-warnings": { syntax: "--max-warnings <n>", description: "Absolute actionable-warning ceiling" },
+    "token-regression": { syntax: "--token-regression <pct>", description: "Allowed input-token growth" },
+    "total-regression": { syntax: "--total-regression <pct>", description: "Allowed total-token growth" },
+    "cost-regression": { syntax: "--cost-regression <pct>", description: "Allowed estimated-cost growth" },
+    "component-regression": { syntax: "--component-regression <pct>", description: "Allowed growth for every component kind" },
+    github: { syntax: "--github", description: "Emit GitHub workflow annotations" },
 };
 export async function main(argv = process.argv.slice(2)) {
     if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
@@ -102,19 +181,21 @@ async function serverCommand(parsed, proxy) {
     const pricing = await loadPricingFile(stringOption(parsed, "pricing"));
     const store = new RunStore(dataDirectory(parsed));
     const host = stringOption(parsed, "host") ?? process.env.CTXPROF_HOST ?? "127.0.0.1";
-    const port = portNumber(numberOption(parsed, "port") ?? numberFromEnv("CTXPROF_PORT") ?? 8787);
-    const capture = captureOption(parsed);
+    const port = integerOption(parsed, "port", 0, 65_535) ?? integerFromEnv("CTXPROF_PORT", 0, 65_535) ?? 8787;
+    const capture = proxy ? captureOption(parsed) : "redacted";
     const upstream = proxy
         ? stringOption(parsed, "upstream") ?? process.env.CTXPROF_UPSTREAM ?? "https://api.openai.com"
         : undefined;
     const upstreamTimeoutMs = proxy
-        ? numberOption(parsed, "upstream-timeout-ms") ?? numberFromEnv("CTXPROF_UPSTREAM_TIMEOUT_MS")
+        ? integerOption(parsed, "upstream-timeout-ms", 1, 2_147_483_647) ??
+            integerFromEnv("CTXPROF_UPSTREAM_TIMEOUT_MS", 1, 2_147_483_647)
         : undefined;
     if (upstream)
         validateUpstream(upstream);
     const defaultLabel = stringOption(parsed, "label");
     const defaultPromptVersion = stringOption(parsed, "prompt-version");
     const allowedHosts = stringOptions(parsed, "allowed-host");
+    const forwardHeaders = proxy ? stringOptions(parsed, "forward-header") : [];
     const running = await startServer({
         host,
         port,
@@ -124,24 +205,29 @@ async function serverCommand(parsed, proxy) {
         ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
         allowRemote: hasFlag(parsed, "allow-remote"),
         ...(allowedHosts.length ? { allowedHosts } : {}),
+        ...(forwardHeaders.length ? { forwardHeaders } : {}),
         captureMode: capture,
         pricing,
         ...(defaultLabel ? { defaultLabel } : {}),
         ...(defaultPromptVersion ? { defaultPromptVersion } : {}),
     });
-    process.stdout.write(`Ctxprof ${proxy ? "proxy + dashboard" : "dashboard"}: ${running.url}\n`);
-    if (proxy) {
-        process.stdout.write(`Upstream: ${new URL(upstream ?? "").origin}\n`);
-        process.stdout.write(`Set your OpenAI-compatible base URL to ${running.url}/v1\n`);
+    try {
+        process.stdout.write(`Ctxprof ${proxy ? "proxy + dashboard" : "dashboard"}: ${running.url}\n`);
+        if (proxy) {
+            process.stdout.write(`Upstream: ${new URL(upstream ?? "").origin}\n`);
+            process.stdout.write(`Set your OpenAI-compatible base URL to ${running.url}/v1\n`);
+        }
+        process.stdout.write(`Store: ${store.runsFile}${proxy ? ` · capture: ${capture}` : ""}\nPress Ctrl+C to stop.\n`);
+        await waitForStop();
+        return 0;
     }
-    process.stdout.write(`Store: ${store.runsFile} · capture: ${capture}\nPress Ctrl+C to stop.\n`);
-    await waitForStop();
-    await running.close();
-    return 0;
+    finally {
+        await running.close();
+    }
 }
 async function reportCommand(parsed) {
     const store = new RunStore(dataDirectory(parsed));
-    const runs = await store.list(numberOption(parsed, "limit") ?? 5_000);
+    const runs = await store.list(integerOption(parsed, "limit", 1, 5_000) ?? 5_000);
     if (runs.length === 0)
         throw new Error(`No captures found in ${store.runsFile}.`);
     const output = await writeHtmlReport(runs, stringOption(parsed, "output") ?? "ctxprof-report.html", stringOption(parsed, "title") ?? "Ctxprof context report");
@@ -174,8 +260,12 @@ async function compareCommand(parsed) {
     return 0;
 }
 async function checkCommand(parsed) {
-    const configPath = path.resolve(stringOption(parsed, "config") ?? "ctxprof.config.json");
+    const explicitConfig = stringOption(parsed, "config");
+    const configPath = path.resolve(explicitConfig ?? "ctxprof.config.json");
     const configExists = await exists(configPath);
+    if (explicitConfig && !configExists) {
+        throw new Error(`Budget config not found: ${configPath}`);
+    }
     const config = configExists ? await readBudgetConfig(configPath) : {};
     applyCliBudgetOptions(config, parsed);
     const configDirectory = path.dirname(configPath);
@@ -186,13 +276,21 @@ async function checkCommand(parsed) {
         throw new Error("No budget inputs. Add input files to ctxprof.config.json or pass them after `ctxprof check`.");
     }
     const pricing = await loadPricingFile(stringOption(parsed, "pricing"));
-    const imports = await importInputs(inputs, { captureMode: "none", pricing });
+    const imports = await importInputs(inputs, { captureMode: "none", pricing }, configDirectory);
     const cases = metricsForRuns(imports);
     const baselineOption = stringOption(parsed, "baseline") ?? config.baseline;
     const baselinePath = baselineOption ? path.resolve(configDirectory, baselineOption) : null;
     const update = hasFlag(parsed, "update-baseline");
+    const hasLimits = hasBudgetLimits(config);
+    const hasRegressions = hasBudgetRegressions(config);
+    if (!hasLimits && !hasRegressions && !update) {
+        throw new Error("No context-budget limits are configured. Provide a config file or at least one --max-* or --*-regression option.");
+    }
+    if (hasRegressions && !baselinePath) {
+        throw new Error("Regression limits require a baseline path in config or --baseline <path>.");
+    }
     const baseline = baselinePath ? await readBaseline(baselinePath) : null;
-    if (baselinePath && !baseline && !update && config.regressions) {
+    if (baselinePath && !baseline && !update && (hasRegressions || stringOption(parsed, "baseline") !== undefined)) {
         throw new Error(`Baseline not found at ${baselinePath}. Run ctxprof check --update-baseline once.`);
     }
     // Updating a baseline is an explicit acknowledgement of the new regression
@@ -211,6 +309,16 @@ async function checkCommand(parsed) {
         printBudgetResult(result, hasFlag(parsed, "github") || process.env.GITHUB_ACTIONS === "true");
     }
     return result.passed ? 0 : 1;
+}
+function hasBudgetLimits(config) {
+    if (!config.limits)
+        return false;
+    return Object.entries(config.limits).some(([key, value]) => key === "components"
+        ? Boolean(value && Object.values(value).some((entry) => entry !== undefined))
+        : value !== undefined);
+}
+function hasBudgetRegressions(config) {
+    return Boolean(config.regressions && Object.values(config.regressions).some((value) => value !== undefined));
 }
 async function demoCommand(parsed) {
     const pricing = await loadPricingFile(stringOption(parsed, "pricing"));
@@ -242,17 +350,74 @@ async function pricingCommand(parsed) {
 async function doctorCommand(parsed) {
     const store = new RunStore(dataDirectory(parsed));
     const nodeMajor = Number(process.versions.node.split(".")[0]);
+    const dataCheck = await checkDataDirectory(store.directory);
+    const capture = process.env.CTXPROF_CAPTURE ?? "redacted";
+    const captureValid = capture === "none" || capture === "redacted";
+    const host = stringOption(parsed, "host") ?? process.env.CTXPROF_HOST ?? "127.0.0.1";
+    const remoteAllowed = hasFlag(parsed, "allow-remote");
+    const bindValid = isLoopbackHost(host) || remoteAllowed;
     const checks = [
-        ["Node.js >= 20", nodeMajor >= 20, process.version],
-        ["Data directory", true, store.directory],
-        ["Default bind", true, process.env.CTXPROF_HOST ?? "127.0.0.1 (loopback)"],
-        ["Capture policy", true, process.env.CTXPROF_CAPTURE ?? "redacted"],
+        [`Node.js >= ${MINIMUM_NODE_MAJOR}`, nodeMajor >= MINIMUM_NODE_MAJOR, process.version],
+        ["Data directory", dataCheck.passed, dataCheck.detail],
+        ["Bind policy", bindValid, bindValid
+                ? `${host}${isLoopbackHost(host) ? " (loopback)" : " (remote bind explicitly allowed)"}`
+                : `${host} is non-loopback; pass --allow-remote only behind a trusted boundary`],
+        ["Capture policy", captureValid, captureValid ? capture : `${capture} is invalid; use redacted or none`],
         ["API key in environment", true, process.env.OPENAI_API_KEY ? "set (value hidden)" : "not set (fine for import/demo)"],
     ];
     for (const [name, passed, detail] of checks) {
         process.stdout.write(`${passed ? "✓" : "✗"} ${name.padEnd(25)} ${detail}\n`);
     }
     return checks.every((check) => check[1]) ? 0 : 1;
+}
+async function checkDataDirectory(target) {
+    const resolved = path.resolve(target);
+    let existing = resolved;
+    while (true) {
+        try {
+            const information = await stat(existing);
+            if (!information.isDirectory()) {
+                return { passed: false, detail: `${existing} is not a directory` };
+            }
+            break;
+        }
+        catch (error) {
+            if (!isErrno(error, "ENOENT"))
+                return { passed: false, detail: safeError(error) };
+            const parent = path.dirname(existing);
+            if (parent === existing)
+                return { passed: false, detail: `No accessible parent for ${resolved}` };
+            existing = parent;
+        }
+    }
+    let probe;
+    try {
+        probe = await mkdtemp(path.join(existing, ".ctxprof-doctor-"));
+        await rm(probe, { recursive: true });
+        probe = undefined;
+        return {
+            passed: true,
+            detail: existing === resolved ? resolved : `${resolved} (parent ${existing} is writable)`,
+        };
+    }
+    catch (error) {
+        return { passed: false, detail: `Cannot create and remove a probe directory: ${safeError(error)}` };
+    }
+    finally {
+        if (probe)
+            await rm(probe, { recursive: true, force: true }).catch(() => undefined);
+    }
+}
+function isErrno(error, code) {
+    return error instanceof Error && "code" in error && error.code === code;
+}
+function isLoopbackHost(host) {
+    const normalized = host.replace(/^\[|\]$/g, "").toLowerCase();
+    if (normalized === "localhost" || normalized === "::1")
+        return true;
+    if (isIP(normalized) === 4)
+        return normalized.split(".")[0] === "127";
+    return normalized.startsWith("::ffff:127.");
 }
 function importOptions(parsed, pricing) {
     const label = stringOption(parsed, "label");
@@ -266,9 +431,28 @@ function importOptions(parsed, pricing) {
         ...(model ? { model } : {}),
     };
 }
-async function importInputs(files, options) {
-    const groups = await Promise.all(files.map((file) => importFile(file, options)));
-    return groups.flat();
+async function importInputs(files, options, identityRoot = process.cwd()) {
+    const absoluteFiles = files.map((file) => path.resolve(file));
+    const canonicalKeys = absoluteFiles.map((file) => process.platform === "win32" ? file.toLowerCase() : file);
+    if (new Set(canonicalKeys).size !== canonicalKeys.length) {
+        throw new Error("The same budget input file was provided more than once.");
+    }
+    const basenameCounts = new Map();
+    for (const file of absoluteFiles) {
+        const key = path.basename(file).toLowerCase();
+        basenameCounts.set(key, (basenameCounts.get(key) ?? 0) + 1);
+    }
+    const groups = await Promise.all(absoluteFiles.map((file) => importFile(file, options)));
+    return groups.flatMap((runs, fileIndex) => {
+        const file = absoluteFiles[fileIndex];
+        if ((basenameCounts.get(path.basename(file).toLowerCase()) ?? 0) === 1)
+            return runs;
+        const relative = path.relative(path.resolve(identityRoot), file).split(path.sep).join("/") || path.basename(file);
+        return runs.map((named, exchangeIndex) => ({
+            ...named,
+            name: runs.length === 1 ? relative : `${relative}#${exchangeIndex + 1}`,
+        }));
+    });
 }
 function applyCliBudgetOptions(config, parsed) {
     config.limits ??= {};
@@ -370,6 +554,10 @@ function validateOptions(parsed, allowed) {
         if (!BOOLEAN_OPTIONS.has(name) && value === true) {
             throw new Error(`--${name} requires a value.`);
         }
+        if (!BOOLEAN_OPTIONS.has(name) &&
+            (typeof value === "string" ? value.trim().length === 0 : Array.isArray(value) && value.some((entry) => entry.trim().length === 0))) {
+            throw new Error(`--${name} requires a non-empty value.`);
+        }
     }
 }
 function stringOption(parsed, name) {
@@ -395,6 +583,16 @@ function numberOption(parsed, name) {
         throw new Error(`--${name} must be a non-negative number.`);
     return number;
 }
+function integerOption(parsed, name, min, max) {
+    const value = stringOption(parsed, name);
+    if (value === undefined)
+        return undefined;
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < min || number > max) {
+        throw new Error(`--${name} must be an integer from ${min} to ${max}.`);
+    }
+    return number;
+}
 function hasFlag(parsed, name) {
     return parsed.options.get(name) === true;
 }
@@ -412,20 +610,15 @@ function requireFiles(parsed) {
     if (parsed.positionals.length === 0)
         throw new Error("Pass at least one .json, .jsonl, or .har file.");
 }
-function numberFromEnv(name) {
+function integerFromEnv(name, min, max) {
     const value = process.env[name];
     if (!value)
         return undefined;
     const number = Number(value);
-    if (!Number.isFinite(number) || number < 0)
-        throw new Error(`${name} must be a non-negative number.`);
-    return number;
-}
-function portNumber(value) {
-    if (!Number.isInteger(value) || value < 0 || value > 65_535) {
-        throw new Error("--port must be an integer from 0 to 65535.");
+    if (!Number.isSafeInteger(number) || number < min || number > max) {
+        throw new Error(`${name} must be an integer from ${min} to ${max}.`);
     }
-    return value;
+    return number;
 }
 function validateUpstream(value) {
     let url;
@@ -467,12 +660,18 @@ async function waitForStop() {
     });
 }
 function printHelp(command) {
-    if (command === "proxy" || command === "serve") {
-        process.stdout.write(`ctxprof ${command} [options]\n\n${command === "proxy" ? "Run the recording proxy and live dashboard." : "Serve the local capture dashboard without an upstream proxy."}\n\nOptions:\n  --host <address>               Bind address (default 127.0.0.1)\n  --port <n>                     Listen port (default 8787)\n  --allow-remote                 Permit a non-loopback bind\n  --allowed-host <hostname>      Allow an exact reverse-proxy Host (repeatable)\n${command === "proxy" ? "  --upstream <url>               OpenAI-compatible upstream URL\n  --upstream-timeout-ms <n>     Upstream deadline in milliseconds\n" : ""}  --data <dir>                   Store directory (default .ctxprof)\n  --capture redacted|none       Stored body policy (default redacted)\n  --help                         Show this help\n`);
-        return;
-    }
-    if (command === "check") {
-        process.stdout.write(`ctxprof check [files...] [options]\n\nFail CI when context tokens, cost, warnings, or components exceed limits or regress from a committed baseline.\n\nOptions:\n  --config <file>              Budget config (default ctxprof.config.json)\n  --baseline <file>            Override baseline path\n  --pricing <file>             Exact custom model pricing JSON\n  --update-baseline            Write the current metrics as baseline\n  --max-input-tokens <n>       Absolute input-token ceiling\n  --max-total-tokens <n>       Absolute input + output-token ceiling\n  --max-cost <usd>             Absolute estimated-cost ceiling\n  --max-warnings <n>           Absolute actionable-warning ceiling\n  --token-regression <pct>     Allowed input-token growth\n  --total-regression <pct>     Allowed total-token growth\n  --cost-regression <pct>      Allowed estimated-cost growth\n  --component-regression <pct> Allowed growth for every component kind\n  --github                     Emit GitHub workflow annotations\n  --json                       Machine-readable result\n  --help                       Show this help\n`);
+    if (command && COMMAND_HELP[command] && COMMAND_OPTIONS[command]) {
+        const optionNames = [
+            ...[...COMMAND_OPTIONS[command]].filter((name) => name !== "help"),
+            ...(COMMAND_OPTIONS[command].has("help") ? ["help"] : []),
+        ];
+        const optionLines = optionNames.map((name) => {
+            const help = OPTION_HELP[name];
+            if (!help)
+                throw new Error(`Missing help metadata for --${name}.`);
+            return `  ${help.syntax.padEnd(34)} ${help.description}`;
+        });
+        process.stdout.write(`${COMMAND_HELP[command].usage}\n\n${COMMAND_HELP[command].summary}\n\nOptions:\n${optionLines.join("\n")}\n`);
         return;
     }
     process.stdout.write(`ctxprof ${VERSION} — the flamegraph for your context window\n\nUsage:\n  ctxprof <command> [options]\n\nCapture and inspect\n  proxy     Run an OpenAI-compatible recording proxy + dashboard\n  serve     View captures without enabling upstream proxying\n  import    Add HAR, JSON, or JSONL exchanges to the local store\n  analyze   Profile files without saving them\n  report    Export a self-contained interactive HTML report\n  demo      Load a deterministic A/B demo (no API key required)\n\nGuard and compare\n  compare   Compare aggregate prompt versions A → B\n  check     Run a context budget test for CI\n  pricing   Show the dated built-in pricing catalog\n  doctor    Check the local runtime and privacy defaults\n\nCommon options (where supported)\n  --data <dir>                 Store directory (default .ctxprof)\n  --pricing <file>             Exact custom model pricing JSON\n  --capture redacted|none      Stored body policy (default redacted)\n  --help                       Show help\n\nQuick start:\n  ctxprof demo\n  ctxprof serve\n\nProxy an app:\n  ctxprof proxy --upstream https://api.openai.com --port 8787\n  # point the SDK base URL to http://127.0.0.1:8787/v1\n`);

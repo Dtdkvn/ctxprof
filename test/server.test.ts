@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { analyzeExchange } from "../src/analyzer.js";
+import { MAX_PROFILE_COMPONENTS, MAX_PROFILE_RUN_BYTES, MAX_PROFILE_WARNINGS } from "../src/limits.js";
 import { startServer } from "../src/server.js";
 import { RunStore } from "../src/store.js";
 import type { ProfileRun } from "../src/types.js";
@@ -61,6 +63,52 @@ test("passes through an OpenAI-compatible response and records it safely", async
   const dashboard = await fetch(proxy.url);
   assert.match(dashboard.headers.get("content-security-policy") ?? "", /default-src 'none'/);
   assert.match(await dashboard.text(), /Context treemap/);
+});
+
+test("proxy capture bounds adversarial component amplification before persistence", async (context) => {
+  const upstream = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      model: "custom-model",
+      choices: [],
+      usage: { prompt_tokens: 20_001, completion_tokens: 1 },
+    }));
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  context.after(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
+  const address = upstream.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-amplification-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new RunStore(directory);
+  let capturedResolve!: (run: ProfileRun) => void;
+  const captured = new Promise<ProfileRun>((resolve) => { capturedResolve = resolve; });
+  const proxy = await startServer({
+    port: 0,
+    upstream: `http://127.0.0.1:${address.port}`,
+    store,
+    captureMode: "none",
+    quiet: true,
+    onRun: capturedResolve,
+  });
+  context.after(() => proxy.close());
+
+  const response = await fetch(`${proxy.url}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "custom-model",
+      messages: [{ role: "user", content: "small" }],
+      tools: Array.from({ length: 20_000 }, () => null),
+    }),
+  });
+  assert.equal(response.status, 200);
+  const run = await captured;
+  assert.equal(run.components.length, MAX_PROFILE_COMPONENTS);
+  assert.ok(run.warnings.length <= MAX_PROFILE_WARNINGS);
+  assert.equal(run.warnings.filter((warning) => warning.code === "analysis-truncated").length, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify(run), "utf8") <= MAX_PROFILE_RUN_BYTES);
+  assert.equal((await store.list()).length, 1);
 });
 
 test("refuses a remote bind unless explicitly allowed", async () => {
@@ -288,7 +336,44 @@ test("rejects non-JSON proxy requests before contacting upstream", async (contex
   assert.equal(upstreamRequests, 0);
 });
 
-test("strips forwarding and identity-proxy headers before upstream", async (context) => {
+test("lists the default number of runs when the limit query is absent or blank", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-default-limit-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new RunStore(directory);
+  await store.init();
+  await store.append(analyzeExchange({ model: "custom", messages: [{ role: "user", content: "one" }] }));
+  await store.append(analyzeExchange({ model: "custom", messages: [{ role: "user", content: "two" }] }));
+  const server = await startServer({ port: 0, store, quiet: true });
+  context.after(() => server.close());
+
+  for (const suffix of ["", "?limit="]) {
+    const response = await fetch(`${server.url}/api/runs${suffix}`);
+    assert.equal(response.status, 200);
+    assert.equal(((await response.json()) as { runs: ProfileRun[] }).runs.length, 2);
+  }
+  const limited = await fetch(`${server.url}/api/runs?limit=1`);
+  assert.equal(((await limited.json()) as { runs: ProfileRun[] }).runs.length, 1);
+});
+
+test("serve and proxy dashboards expose distinct live modes", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-dashboard-mode-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const storeServer = await startServer({ port: 0, store: new RunStore(directory), quiet: true });
+  const proxyServer = await startServer({
+    port: 0,
+    upstream: "http://127.0.0.1:9",
+    store: new RunStore(directory),
+    quiet: true,
+  });
+  context.after(() => Promise.all([storeServer.close(), proxyServer.close()]));
+
+  const storeHtml = await (await fetch(storeServer.url)).text();
+  const proxyHtml = await (await fetch(proxyServer.url)).text();
+  assert.match(storeHtml, /var MODE="store"/);
+  assert.match(proxyHtml, /var MODE="proxy"/);
+});
+
+test("forwards only allowlisted provider headers and explicit safe opt-ins", async (context) => {
   const longConnection = `${Array.from({ length: 30 }, (_value, index) => `x-hop-${index}`).join(", ")}, x-internal-hop`;
   let observedHeadersResolve!: (headers: IncomingHttpHeaders) => void;
   const observedHeaders = new Promise<IncomingHttpHeaders>((resolve) => { observedHeadersResolve = resolve; });
@@ -316,6 +401,7 @@ test("strips forwarding and identity-proxy headers before upstream", async (cont
   const proxy = await startServer({
     port: 0,
     upstream: `http://127.0.0.1:${address.port}`,
+    forwardHeaders: ["x-provider-feature"],
     store: new RunStore(directory),
     quiet: true,
     onRun: () => capturedResolve(),
@@ -339,7 +425,26 @@ test("strips forwarding and identity-proxy headers before upstream", async (cont
       "x-goog-authenticated-user-email": "accounts.google.com:private@example.test",
       "x-goog-iap-jwt-assertion": "synthetic-iap-token",
       "x-real-ip": "203.0.113.7",
+      "x-vercel-proxied-for": "203.0.113.7",
+      "x-vercel-ip-country": "US",
+      "x-nf-client-connection-ip": "203.0.113.7",
+      "fly-client-ip": "203.0.113.7",
+      "x-cluster-client-ip": "203.0.113.7",
+      "x-user-email": "private@example.test",
+      authorization: "Bearer provider-token",
+      accept: "application/json",
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "prompt-caching-2024-07-31",
+      "api-key": "azure-key",
+      "x-api-key": "anthropic-key",
+      "x-goog-api-key": "google-key",
+      "x-goog-user-project": "billing-project",
+      "idempotency-key": "request-123",
       "openai-organization": "org_test",
+      "openai-project": "proj_test",
+      "openai-beta": "assistants=v2",
+      "x-stainless-lang": "js",
+      "x-provider-feature": "custom-v1",
     },
     body: JSON.stringify({ model: "gpt-5.6-luna", messages: [] }),
   });
@@ -360,12 +465,39 @@ test("strips forwarding and identity-proxy headers before upstream", async (cont
     "x-goog-authenticated-user-email",
     "x-goog-iap-jwt-assertion",
     "x-real-ip",
+    "x-vercel-proxied-for",
+    "x-vercel-ip-country",
+    "x-nf-client-connection-ip",
+    "fly-client-ip",
+    "x-cluster-client-ip",
+    "x-user-email",
   ]) {
     assert.equal(headers[name], undefined, `${name} must not cross the proxy boundary`);
   }
-  assert.equal(headers["openai-organization"], "org_test");
+  for (const [name, value] of Object.entries({
+    authorization: "Bearer provider-token",
+    accept: "application/json",
+    "anthropic-version": "2023-06-01",
+    "anthropic-beta": "prompt-caching-2024-07-31",
+    "api-key": "azure-key",
+    "x-api-key": "anthropic-key",
+    "x-goog-api-key": "google-key",
+    "x-goog-user-project": "billing-project",
+    "idempotency-key": "request-123",
+    "openai-organization": "org_test",
+    "openai-project": "proj_test",
+    "openai-beta": "assistants=v2",
+    "x-stainless-lang": "js",
+    "x-provider-feature": "custom-v1",
+  })) {
+    assert.equal(headers[name], value, `${name} must reach the provider`);
+  }
   assert.equal(headers["accept-encoding"], "identity");
   await captured;
+  await assert.rejects(
+    () => startServer({ port: 0, forwardHeaders: ["x-forwarded-for"] }),
+    /unsafe forwarded header/,
+  );
 });
 
 test("preserves unknown response encodings and decodes supported encodings for capture", async (context) => {
@@ -457,7 +589,11 @@ test("retains final usage beyond the bounded response capture window", async (co
       payload: filler,
       usage: request.url === "/v1/negative-usage"
         ? { prompt_tokens: -53, completion_tokens: -7 }
-        : { prompt_tokens: 53, completion_tokens: 7 },
+        : request.url === "/v1/unsafe-usage"
+          ? { prompt_tokens: 1e20, completion_tokens: 1e20 }
+          : request.url === "/v1/overflow-usage"
+            ? { prompt_tokens: 1e308, completion_tokens: 1e308 }
+            : { prompt_tokens: 53, completion_tokens: 7 },
     }));
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
@@ -476,12 +612,12 @@ test("retains final usage beyond the bounded response capture window", async (co
     quiet: true,
     onRun: () => {
       captureCount += 1;
-      if (captureCount === 3) capturedResolve();
+      if (captureCount === 5) capturedResolve();
     },
   });
   context.after(() => proxy.close());
 
-  for (const endpoint of ["large-stream", "large-json", "negative-usage"]) {
+  for (const endpoint of ["large-stream", "large-json", "negative-usage", "unsafe-usage", "overflow-usage"]) {
     const response = await fetch(`${proxy.url}/v1/${endpoint}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -495,6 +631,8 @@ test("retains final usage beyond the bounded response capture window", async (co
   const streamRun = runs.find((run) => run.endpoint === "/v1/large-stream");
   const jsonRun = runs.find((run) => run.endpoint === "/v1/large-json");
   const negativeUsageRun = runs.find((run) => run.endpoint === "/v1/negative-usage");
+  const unsafeUsageRun = runs.find((run) => run.endpoint === "/v1/unsafe-usage");
+  const overflowUsageRun = runs.find((run) => run.endpoint === "/v1/overflow-usage");
   assert.equal(streamRun?.totals.providerInputTokens, 47);
   assert.equal(streamRun?.totals.outputTokens, 5);
   assert.equal(jsonRun?.totals.providerInputTokens, 53);
@@ -506,6 +644,12 @@ test("retains final usage beyond the bounded response capture window", async (co
     assert.equal(run?.warnings.some((warning) => warning.code === "truncated-response"), true);
   }
   assert.equal(negativeUsageRun?.warnings.some((warning) => warning.code === "truncated-response"), true);
+  for (const run of [unsafeUsageRun, overflowUsageRun]) {
+    assert.equal(run?.totals.providerInputTokens, null);
+    assert.equal(Number.isSafeInteger(run?.totals.totalTokens), true);
+    assert.equal(run?.warnings.some((warning) => warning.code === "invalid-provider-usage"), true);
+    assert.equal(run?.warnings.some((warning) => warning.code === "truncated-response"), true);
+  }
 });
 
 test("aborts the upstream socket when the downstream client disconnects", async (context) => {

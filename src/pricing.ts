@@ -98,7 +98,7 @@ export function findPricing(
   additional: readonly PricingRecord[] = [],
 ): PricingRecord | null {
   const normalized = normalizeModel(model);
-  const records = [...additional, ...BUILTIN_PRICING];
+  const records = [...additional.map((record, index) => validatePricing(record, index)), ...BUILTIN_PRICING];
   const exact = records.find((record) => normalizeModel(record.model) === normalized);
   if (exact) return { ...exact };
 
@@ -107,10 +107,21 @@ export function findPricing(
   const compatible = records
     .filter((record) => {
       const base = normalizeModel(record.model);
-      return normalized.startsWith(`${base}-20`);
+      if (!normalized.startsWith(`${base}-`)) return false;
+      return isCanonicalSnapshotDate(normalized.slice(base.length + 1));
     })
     .sort((a, b) => b.model.length - a.model.length)[0];
   return compatible ? { ...compatible, model } : null;
+}
+
+function isCanonicalSnapshotDate(value: string): boolean {
+  const match = /^(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 export async function loadPricingFile(filePath: string | undefined): Promise<PricingRecord[]> {
@@ -127,10 +138,10 @@ function validatePricing(value: unknown, index: number): PricingRecord {
     throw new Error(`Pricing record ${index} must be an object.`);
   }
   const candidate = value as Record<string, unknown>;
-  const model = candidate.model;
+  const model = typeof candidate.model === "string" ? candidate.model.trim() : candidate.model;
   const input = candidate.inputPerMillionUsd;
   const output = candidate.outputPerMillionUsd;
-  if (typeof model !== "string" || model.length === 0) {
+  if (typeof model !== "string" || model.length === 0 || model.length > 200) {
     throw new Error(`Pricing record ${index} has no model.`);
   }
   if (typeof input !== "number" || input < 0 || !Number.isFinite(input)) {
@@ -140,15 +151,27 @@ function validatePricing(value: unknown, index: number): PricingRecord {
     throw new Error(`Pricing record ${index} has an invalid output price.`);
   }
   const contextWindow = candidate.contextWindow;
-  if (contextWindow !== null && (typeof contextWindow !== "number" || contextWindow <= 0)) {
+  if (contextWindow !== null && !isSafePositiveInteger(contextWindow)) {
     throw new Error(`Pricing record ${index} has an invalid context window.`);
+  }
+  const source = candidate.source === undefined ? "user catalog" : candidate.source;
+  const checkedAt = candidate.checkedAt === undefined ? "user supplied" : candidate.checkedAt;
+  if (typeof source !== "string" || source.trim().length === 0 || source.trim().length > 500) {
+    throw new Error(`Pricing record ${index} has an invalid source.`);
+  }
+  if (typeof checkedAt !== "string" || checkedAt.trim().length === 0 || checkedAt.trim().length > 100) {
+    throw new Error(`Pricing record ${index} has an invalid checkedAt value.`);
   }
   return {
     model,
     inputPerMillionUsd: input,
     outputPerMillionUsd: output,
     contextWindow: contextWindow as number | null,
-    source: typeof candidate.source === "string" ? candidate.source : "user catalog",
-    checkedAt: typeof candidate.checkedAt === "string" ? candidate.checkedAt : "user supplied",
+    source: source.trim(),
+    checkedAt: checkedAt.trim(),
   };
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }

@@ -34,6 +34,14 @@ test("accepts the canonical price for a case-insensitive model identifier", () =
   assert.equal(cases["case-insensitive-model"]?.estimatedCostUsd, run.totals.estimatedTotalCostUsd);
 });
 
+test("rejects ambiguous duplicate case identities instead of assigning order-dependent suffixes", () => {
+  const run = analyzeExchange({ model: "custom", messages: [{ role: "user", content: "same" }] });
+  assert.throws(
+    () => metricsForRuns([{ name: "same.json", run }, { name: "same.json", run }]),
+    /Duplicate context budget case name/,
+  );
+});
+
 test("validates configuration and creates baseline parent directories", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-budget-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -72,6 +80,22 @@ test("requires new regression cases to be acknowledged in the baseline", async (
   );
   assert.equal(result.passed, false);
   assert.match(result.violations[0]?.message ?? "", /missing from the committed baseline/);
+});
+
+test("compares removed baseline cases only when regression policy is enabled", () => {
+  const prior = makeBaseline({
+    removed: {
+      inputTokens: 10,
+      totalTokens: 10,
+      estimatedCostUsd: null,
+      warnings: 0,
+      components: { system: 10, developer: 0, tools: 0, message: 0, tool_result: 0, other: 0 },
+    },
+  });
+  assert.equal(evaluateBudget({}, { limits: { inputTokens: 100 } }, prior).passed, true);
+  const regression = evaluateBudget({}, { regressions: { inputTokensPercent: 0 } }, prior);
+  assert.equal(regression.passed, false);
+  assert.match(regression.violations[0]?.message ?? "", /missing from current inputs/);
 });
 
 test("fails closed when a library caller supplies non-finite run metrics", () => {

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { analyzeExchange } from "../src/analyzer.js";
 import { createDemoRuns } from "../src/demo.js";
+import { MAX_PROFILE_RUN_BYTES } from "../src/limits.js";
 import { RunStore } from "../src/store.js";
 
 test("stores JSONL captures and tolerates an interrupted final record", async (context) => {
@@ -19,6 +20,19 @@ test("stores JSONL captures and tolerates an interrupted final record", async (c
   assert.ok((await store.sizeBytes()) > 0);
 });
 
+test("store list and append enforce numeric and serialized-run bounds", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-store-bounds-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new RunStore(directory);
+  await store.append(createDemoRuns()[0]!);
+  assert.deepEqual(await store.list(0), []);
+  await assert.rejects(() => store.list(1.5), /non-negative safe integer/);
+
+  const oversized = createDemoRuns()[0]!;
+  oversized.exchange.request = "x".repeat(MAX_PROFILE_RUN_BYTES);
+  await assert.rejects(() => store.append(oversized), /Refusing to store a .*ProfileRun/);
+});
+
 test("recovers the write queue after a failed append", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-store-recovery-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -30,4 +44,18 @@ test("recovers the write queue after a failed append", async (context) => {
   await rm(store.runsFile, { recursive: true });
   await store.append(run);
   assert.equal((await store.list()).length, 1);
+});
+
+test("rejects malformed or non-run records before the interrupted final tail", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-store-integrity-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new RunStore(directory);
+  await store.init();
+  const [first, second] = createDemoRuns();
+  assert.ok(first && second);
+  await writeFile(store.runsFile, `${JSON.stringify(first)}\n{broken\n${JSON.stringify(second)}\n`, "utf8");
+  await assert.rejects(() => store.list(), /runs\.jsonl:2/);
+
+  await writeFile(store.runsFile, `${JSON.stringify(first)}\n{}\n`, "utf8");
+  await assert.rejects(() => store.list(), /Invalid ProfileRun.*runs\.jsonl:2/);
 });
