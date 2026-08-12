@@ -91,6 +91,12 @@ jobs:
           else
             npm publish "$tarball" --ignore-scripts --provenance --access public
           fi
+        # Bootstrap only: npm cannot register a trusted publisher before the
+        # package exists. Store a one-day granular token in the protected
+        # `release` environment for v0.1.0, then remove this fallback as soon
+        # as the GitHub OIDC publisher has been registered on npm.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           generate_release_notes: true

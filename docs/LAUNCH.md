@@ -70,13 +70,14 @@ The source is live at <https://github.com/Dtdkvn/ctxprof>. The npm package and `
 - [ ] Build the container, run its health check as the non-root `node` user with a read-only filesystem, and run `node scripts/check-image-layers.mjs <image>`.
 - [ ] Confirm the deterministic demo contains no credentials, private data, personal filesystem paths, or external network dependency.
 - [ ] Confirm the `ctxprof` package name is available immediately before configuring npm publishing.
-- [ ] Create the GitHub `release` environment and configure npm trusted publishing for repository `Dtdkvn/ctxprof`, workflow filename `release.yml`, environment `release`, and `npm publish`; do not add a long-lived npm token.
+- [ ] For the first publish only, put a one-day granular npm token in the protected GitHub `release` environment as `NPM_TOKEN`. npm cannot register a trusted publisher until the package exists; never use a long-lived or classic token for this bootstrap.
 - [ ] Wait for CI on `main` to pass before creating the release tag.
 
 ### Publish and verify
 
 - [ ] Create and push `v0.1.0` only from the reviewed `main` commit; the release workflow requires the tag to match `package.json` exactly.
 - [ ] Wait for the release workflow to verify the tarball, publish with provenance, and create the GitHub release.
+- [ ] Immediately register npm trusted publishing for repository `Dtdkvn/ctxprof`, workflow `release.yml`, environment `release`, and `npm publish`; then delete `NPM_TOKEN`, revoke the bootstrap token, and remove the workflow's temporary token fallback.
 - [ ] On Node 22 or 24, verify `npm view ctxprof@0.1.0`, install the package in a clean temporary project, run `ctxprof demo`, and open the generated dashboard.
 - [ ] In a separate test repository, pin `Dtdkvn/ctxprof` to the reviewed full tag commit SHA and verify both passing and deliberately failing budget annotations.
 - [ ] Replace the README's “not published yet” language with current npm and Action instructions only after both artifacts resolve publicly.
