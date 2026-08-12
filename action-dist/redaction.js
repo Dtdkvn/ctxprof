@@ -1,22 +1,80 @@
 import { createHash } from "node:crypto";
-const SENSITIVE_KEYS = /(?:^|[_-])(api[_-]?key|authorization|auth|bearer|cookie|password|passwd|secret|session|token|private[_-]?key|client[_-]?secret)(?:$|[_-])/i;
+const DEFAULT_MAX_STRING_CHARS = 16_384;
+const MAX_INLINE_CREDENTIAL_CHARS = DEFAULT_MAX_STRING_CHARS * 2;
+const BASE64URL_SEGMENT = /^[A-Za-z0-9_-]+$/;
 const SECRET_PATTERNS = [
-    /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi,
-    // JSON Web Tokens: header and payload are base64url-encoded JSON objects, so
-    // both begin with `eyJ` ("{\""). Requiring that on the first two segments keeps
-    // the match high-confidence and the pattern linear (no catastrophic backtracking).
-    /\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
     /\bsk-[A-Za-z0-9_-]{12,}\b/g,
     /\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{16,}\b/g,
-    /\bAKIA[0-9A-Z]{16}\b/g,
+    /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
     // Slack tokens use stable, high-signal prefixes. The surrounding guards keep
     // documentation fragments and substrings inside larger identifiers intact.
     /(?<![A-Za-z0-9_-])(?:xox[a-z]|xapp)-(?:[A-Za-z0-9]{1,128}-){1,4}[A-Za-z0-9]{8,256}(?![A-Za-z0-9_-])/g,
     // Google API keys are `AIza` followed by exactly 35 URL-safe characters.
     /(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/g,
-    /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
+    /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/g,
 ];
-const BASIC_AUTHORIZATION = /\bBasic[ \t]+([A-Za-z0-9+/]{2,8192}={0,2})(?![A-Za-z0-9+/=])/gi;
+const PRIVATE_KEY_BEGIN = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/g;
+const SENSITIVE_QUERY_KEYS = new Set([
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth_token",
+    "authorization",
+    "client_secret",
+    "code",
+    "password",
+    "refresh_token",
+    "secret",
+    "session_token",
+    "sig",
+    "signature",
+    "token",
+    "x-amz-security-token",
+    "x-amz-signature",
+    "x-goog-credential",
+    "x-goog-signature",
+]);
+const EXACT_SENSITIVE_KEYS = new Set([
+    "apikey",
+    "apisecret",
+    "authorization",
+    "auth",
+    "bearer",
+    "clientsecret",
+    "consumersecret",
+    "cookie",
+    "jwt",
+    "password",
+    "passwd",
+    "privatekey",
+    "secret",
+    "secretaccesskey",
+    "secretkey",
+    "session",
+    "token",
+]);
+const SENSITIVE_KEY_SUFFIXES = new Set([
+    "accesstoken",
+    "apitoken",
+    "authtoken",
+    "bearertoken",
+    "idtoken",
+    "refreshtoken",
+    "sessionid",
+    "sessiontoken",
+    "signingsecret",
+    "webhooksecret",
+]);
+const SAFE_KEY_QUALIFIERS = new Set([
+    "banner",
+    "count",
+    "duration",
+    "hint",
+    "method",
+    "mode",
+    "policy",
+    "recipe",
+]);
 export function redactValue(value, options = {}) {
     const state = { truncated: false };
     const redacted = visit(value, options, state, 0, "");
@@ -51,62 +109,180 @@ function visit(value, options, state, depth, key) {
     return value;
 }
 function redactString(value, options, state) {
-    let result = value;
+    const max = Math.max(0, options.maxStringChars ?? DEFAULT_MAX_STRING_CHARS);
+    // Only persisted output needs scanning. The look-ahead catches a credential
+    // that starts immediately before the truncation boundary while bounding work
+    // for arbitrarily large library strings.
+    const scanLength = Math.min(value.length, max + MAX_INLINE_CREDENTIAL_CHARS);
+    let result = value.slice(0, scanLength);
     for (const pattern of SECRET_PATTERNS)
         result = result.replace(pattern, "[REDACTED]");
-    result = redactBasicAuthorization(result);
+    result = redactPartialPrivateKey(result);
+    result = redactAuthorizationCredentials(result);
+    result = redactJwtCredentials(result);
+    result = redactPartialJwt(result);
+    result = redactCredentialUrls(result);
     if (options.redactEmails) {
         result = result.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
     }
-    const max = options.maxStringChars ?? 16_384;
-    if (result.length > max) {
+    if (value.length > max) {
         state.truncated = true;
-        result = `${result.slice(0, max)}…[TRUNCATED ${result.length - max} chars]`;
+        result = `${result.slice(0, max)}…[TRUNCATED ${value.length - max} chars]`;
     }
     return result;
 }
-function redactBasicAuthorization(value) {
-    return value.replace(BASIC_AUTHORIZATION, (match, encoded) => {
-        // HTTP Basic credentials are base64(user ":" password). Checking both a
-        // canonical round-trip and the mandatory colon avoids treating ordinary
-        // phrases such as "Basic authentication" as credentials.
-        const normalized = encoded.replace(/=+$/, "");
-        if (normalized.length % 4 === 1)
-            return match;
-        const decoded = Buffer.from(encoded, "base64");
-        if (!decoded.includes(0x3a))
-            return match;
-        if (decoded.toString("base64").replace(/=+$/, "") !== normalized)
-            return match;
-        return "[REDACTED]";
+function redactAuthorizationCredentials(value) {
+    return replaceCredentialCandidates(value, /\b(Bearer|Basic)[ \t]+/gi, (scheme, candidate) => {
+        if (scheme.toLowerCase() === "basic")
+            return isBasicCredential(candidate);
+        return isBearerCredential(candidate);
     });
 }
+function redactPartialPrivateKey(value) {
+    const match = PRIVATE_KEY_BEGIN.exec(value);
+    PRIVATE_KEY_BEGIN.lastIndex = 0;
+    if (!match || match.index === undefined)
+        return value;
+    // A complete key was handled above. A BEGIN marker without an END marker in
+    // the bounded scan crosses the truncation boundary, so fail closed.
+    return `${value.slice(0, match.index)}[REDACTED]`;
+}
+function replaceCredentialCandidates(value, prefix, isCredential) {
+    let result = "";
+    let cursor = 0;
+    for (const match of value.matchAll(prefix)) {
+        const start = match.index;
+        if (start === undefined || start < cursor)
+            continue;
+        const scheme = match[1];
+        const candidateStart = start + match[0].length;
+        let end = candidateStart;
+        while (end < value.length && isAuthorizationCharacter(value[end], scheme))
+            end += 1;
+        const candidate = value.slice(candidateStart, end);
+        result += value.slice(cursor, start);
+        if (candidate.length > MAX_INLINE_CREDENTIAL_CHARS || isCredential(scheme, candidate)) {
+            result += "[REDACTED]";
+        }
+        else {
+            result += value.slice(start, end);
+        }
+        cursor = end;
+    }
+    return result + value.slice(cursor);
+}
+function isAuthorizationCharacter(character, scheme) {
+    return scheme.toLowerCase() === "basic"
+        ? /[A-Za-z0-9+/=]/.test(character)
+        : /[A-Za-z0-9._~+/=-]/.test(character);
+}
+function isBasicCredential(encoded) {
+    if (encoded.length < 2 || encoded.length > MAX_INLINE_CREDENTIAL_CHARS)
+        return false;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
+        return false;
+    const normalized = encoded.replace(/=+$/, "");
+    if (normalized.length % 4 === 1)
+        return false;
+    const decoded = Buffer.from(encoded, "base64");
+    return decoded.includes(0x3a) && decoded.toString("base64").replace(/=+$/, "") === normalized;
+}
+function isBearerCredential(candidate) {
+    if (candidate.length < 12 || candidate.length > MAX_INLINE_CREDENTIAL_CHARS)
+        return false;
+    if (!/^[A-Za-z0-9._~+/-]+={0,2}$/.test(candidate))
+        return false;
+    // A credential following an authorization scheme is high-confidence once it
+    // is long enough; only short documentation labels remain untouched.
+    return candidate.length >= 20;
+}
+function redactJwtCredentials(value) {
+    return value.replace(/(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,})(?![A-Za-z0-9_-])/g, (candidate) => candidate.length > MAX_INLINE_CREDENTIAL_CHARS || isJwtCredential(candidate)
+        ? "[REDACTED]"
+        : candidate);
+}
+function isJwtCredential(candidate) {
+    if (candidate.length > MAX_INLINE_CREDENTIAL_CHARS)
+        return false;
+    const segments = candidate.split(".");
+    if (segments.length !== 3 || segments[2].length < 6)
+        return false;
+    return isJsonObjectSegment(segments[0]) && isJsonObjectSegment(segments[1]);
+}
+function redactPartialJwt(value) {
+    const partial = /(?<![A-Za-z0-9_.-])([A-Za-z0-9_-]{2,16384})\.([A-Za-z0-9_-]{2,})$/.exec(value);
+    if (!partial || partial.index === undefined || !isJsonObjectSegment(partial[1]))
+        return value;
+    return `${value.slice(0, partial.index)}[REDACTED]`;
+}
+function isJsonObjectSegment(segment) {
+    if (!BASE64URL_SEGMENT.test(segment) || segment.length % 4 === 1)
+        return false;
+    try {
+        const decoded = Buffer.from(segment, "base64url");
+        if (decoded.toString("base64url") !== segment.replace(/=+$/, ""))
+            return false;
+        const value = JSON.parse(decoded.toString("utf8"));
+        return value !== null && typeof value === "object" && !Array.isArray(value);
+    }
+    catch {
+        return false;
+    }
+}
+function redactCredentialUrls(value) {
+    return value.replace(/\bhttps?:\/\/[^\s<>"'`]+/gi, (raw) => redactCredentialUrl(raw));
+}
+function redactCredentialUrl(raw) {
+    const trailing = /[),.;!?]+$/.exec(raw)?.[0] ?? "";
+    const candidate = trailing ? raw.slice(0, -trailing.length) : raw;
+    let url;
+    try {
+        url = new URL(candidate);
+    }
+    catch {
+        return raw;
+    }
+    let changed = false;
+    if (url.username || url.password) {
+        url.username = "REDACTED";
+        url.password = "";
+        changed = true;
+    }
+    for (const key of [...url.searchParams.keys()]) {
+        if (SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) {
+            url.searchParams.set(key, "REDACTED");
+            changed = true;
+        }
+    }
+    return changed ? `${url.toString()}${trailing}` : raw;
+}
 function isSensitiveKey(key) {
-    if (SENSITIVE_KEYS.test(key))
-        return true;
-    const compact = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-    return (compact.includes("apikey") ||
-        compact.includes("password") ||
-        compact.includes("privatekey") ||
-        compact.includes("clientsecret") ||
-        compact.includes("awssecretaccesskey") ||
-        compact === "authorization" ||
-        compact === "auth" ||
-        compact === "cookie" ||
-        compact === "secret" ||
-        compact === "session" ||
-        compact === "token" ||
-        compact === "jwt" ||
-        compact.endsWith("apitoken") ||
-        compact.endsWith("authtoken") ||
-        compact.endsWith("bearertoken") ||
-        compact.endsWith("sessiontoken") ||
-        compact.endsWith("accesstoken") ||
-        compact.endsWith("refreshtoken") ||
-        compact.endsWith("idtoken") ||
-        compact.endsWith("sessionid") ||
-        compact.endsWith("signingsecret") ||
-        compact.endsWith("webhooksecret"));
+    const segments = keySegments(key);
+    for (const [index, segment] of segments.entries()) {
+        if (SENSITIVE_KEY_SUFFIXES.has(segment))
+            return true;
+        if (EXACT_SENSITIVE_KEYS.has(segment)) {
+            if (segments.slice(index + 1).some((next) => SAFE_KEY_QUALIFIERS.has(next)))
+                continue;
+            return true;
+        }
+    }
+    for (let index = 0; index < segments.length - 1; index += 1) {
+        const pair = `${segments[index]}${segments[index + 1]}`;
+        if (EXACT_SENSITIVE_KEYS.has(pair) || SENSITIVE_KEY_SUFFIXES.has(pair)) {
+            if (segments.slice(index + 2).some((next) => SAFE_KEY_QUALIFIERS.has(next)))
+                continue;
+            return true;
+        }
+    }
+    return false;
+}
+function keySegments(key) {
+    return key
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .split(/[^A-Za-z0-9]+/)
+        .map((segment) => segment.toLowerCase())
+        .filter(Boolean);
 }
 export function redactText(value) {
     return redactString(value, {}, { truncated: false });
