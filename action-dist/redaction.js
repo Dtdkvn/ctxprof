@@ -196,9 +196,24 @@ function isBearerCredential(candidate, context) {
         return true;
     if (isBearerDocumentation(context.value, candidate, context.end))
         return false;
+    if (isNaturalLanguageBearerLabel(candidate))
+        return false;
     // Outside an explicit header or secret assignment, require an opaque-token
-    // shape. This catches short real credentials without consuming prose labels.
+    // shape. Multi-word lowercase documentation labels are handled above; short
+    // structured tokens and long opaque runs remain credentials.
     return candidate.length >= 12 || /[0-9._~+/-]/.test(candidate);
+}
+function isNaturalLanguageBearerLabel(candidate) {
+    if (!/^[a-z]+(?:-[a-z]+){3,}$/.test(candidate))
+        return false;
+    const words = candidate.split("-");
+    if (words.some((word) => word.length > 32))
+        return false;
+    const hasDocumentationMarker = words.some((word) => /^(?:documentation|placeholder|example|overview|reference|guide|syntax|format|sample)$/.test(word));
+    if (!hasDocumentationMarker)
+        return false;
+    const pronounceable = words.every((word) => word === "a" || word === "i" || (word.length >= 2 && /[aeiouy]/.test(word)));
+    return pronounceable && words.filter((word) => word.length >= 3).length >= 3;
 }
 function hasBearerCredentialContext(value, start) {
     const left = value.slice(Math.max(0, start - 128), start);

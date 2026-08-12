@@ -169,7 +169,15 @@ test("redacts provider and authorization credentials without broad matches", () 
     "Bearer authentication-reference-guide-version-2026",
     "Bearer authentication-overview",
     "Bearer authentication_documentation",
+    "Bearer this-is-a-long-documentation-placeholder",
   ]) assert.equal(redactText(benign), benign);
+
+  const contextualPlaceholder = "this-is-a-long-documentation-placeholder";
+  const contextual = redactText(`Authorization: Bearer ${contextualPlaceholder}`);
+  assert.ok(!contextual.includes(contextualPlaceholder));
+
+  const credentialLikePassphrase = "correct-horse-battery-staple";
+  assert.ok(!redactText(`Bearer ${credentialLikePassphrase}`).includes(credentialLikePassphrase));
 });
 
 test("redacts bounded oversized Basic credentials fail closed", () => {
