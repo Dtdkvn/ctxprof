@@ -23,6 +23,10 @@ try {
     "docs/CI.md",
     "docs/PRIVACY.md",
     "docs/assets/logo.svg",
+    "dist/index.d.ts",
+    "dist/index.d.ts.map",
+    "dist/index.js",
+    "dist/index.js.map",
     "examples/github-actions/context-budget.yml",
   ]) {
     assert.ok(fileNames.has(required), `Packed README dependency is missing: ${required}`);
