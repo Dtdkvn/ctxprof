@@ -4,6 +4,10 @@ All notable changes will be documented here. Ctxprof follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Fixed
+
+- Redacted credentials that appear as a JSON property name. Only values were scanned before, so a payload keyed by an API key or a JWT persisted that key verbatim in the local store.
+
 ### Roadmap
 
 - Pluggable exact tokenizers without making the safe offline core dependent on native modules.

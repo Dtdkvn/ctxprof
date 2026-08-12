@@ -35,7 +35,10 @@ function visit(value, options, state, depth, key) {
     if (value && typeof value === "object") {
         const result = {};
         for (const [childKey, child] of Object.entries(value)) {
-            result[childKey] = visit(child, options, state, depth + 1, childKey);
+            // A credential can appear as the property name itself, for example when a
+            // payload is keyed by API key. Names are scanned with the same patterns as
+            // values so a secret cannot reach the store by sitting in key position.
+            result[redactString(childKey, options, state)] = visit(child, options, state, depth + 1, childKey);
         }
         return result;
     }

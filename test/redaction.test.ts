@@ -53,3 +53,17 @@ test("redacts bare JWT credentials inside strings and non-sensitive keys", () =>
   const benign = "path.to.value";
   assert.equal(redactText(benign), benign);
 });
+
+test("redacts a credential that appears as a property name", () => {
+  const key = "sk-abcdefghijklmnopqrstuvwxyz";
+  const jwt =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+  const serialized = JSON.stringify(
+    redactValue({ quotas: { [key]: { limit: 5 } }, sessions: { [jwt]: 1 } }).value,
+  );
+  assert.doesNotMatch(serialized, /sk-abcdefghij/);
+  assert.doesNotMatch(serialized, /eyJ/);
+  // Ordinary property names must survive untouched.
+  const kept = redactValue({ model: { temperature: 0.2 } }).value as Record<string, unknown>;
+  assert.deepEqual(kept, { model: { temperature: 0.2 } });
+});
