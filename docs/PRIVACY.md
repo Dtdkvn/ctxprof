@@ -24,7 +24,7 @@ For highly sensitive data, create a synthetic fixture that preserves shape and s
 ## What is redacted
 
 - values below common secret-like keys, including authorization, API keys, cookies, passwords, private keys, secrets, sessions, and tokens;
-- bearer credentials and common OpenAI, GitHub, AWS, and PEM private-key patterns embedded in strings;
+- bearer credentials, JSON Web Tokens (JWTs), and common OpenAI, GitHub, AWS, and PEM private-key patterns embedded in strings;
 - safe error messages before printing;
 - long strings and oversized full exchanges.
 

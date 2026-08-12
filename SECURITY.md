@@ -58,7 +58,7 @@ Redirects are not followed. TLS validation is delegated to Node's standard HTTPS
 
 ## Redaction details
 
-Sensitive object keys include common spellings of authorization, API keys, cookies, passwords, sessions, private keys, secrets, and tokens. Inline patterns include bearer credentials, common OpenAI/GitHub/AWS key shapes, and PEM private keys. Email redaction is available through the library redaction API but is not enabled by default because email-like strings can be legitimate prompt data.
+Sensitive object keys include common spellings of authorization, API keys, cookies, passwords, sessions, private keys, secrets, and tokens. Inline patterns include bearer credentials, JSON Web Tokens (JWTs), common OpenAI/GitHub/AWS key shapes, and PEM private keys. Email redaction is available through the library redaction API but is not enabled by default because email-like strings can be legitimate prompt data.
 
 Redaction happens before persistence, but profiling necessarily sees the original request in process memory. If that is unacceptable, analyze an already-sanitized fixture instead of using proxy mode.
 

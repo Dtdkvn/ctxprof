@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 const SENSITIVE_KEYS = /(?:^|[_-])(api[_-]?key|authorization|auth|bearer|cookie|password|passwd|secret|session|token|private[_-]?key|client[_-]?secret)(?:$|[_-])/i;
 const SECRET_PATTERNS: readonly RegExp[] = [
   /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi,
+  // JSON Web Tokens: header and payload are base64url-encoded JSON objects, so
+  // both begin with `eyJ` ("{\""). Requiring that on the first two segments keeps
+  // the match high-confidence and the pattern linear (no catastrophic backtracking).
+  /\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
   /\bsk-[A-Za-z0-9_-]{12,}\b/g,
   /\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{16,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,

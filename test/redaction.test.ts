@@ -38,3 +38,18 @@ test("redacts common inline secret formats and truncates", () => {
   assert.equal(result.truncated, true);
   assert.match(String(result.value), /TRUNCATED/);
 });
+
+test("redacts bare JWT credentials inside strings and non-sensitive keys", () => {
+  const jwt =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+  assert.doesNotMatch(redactText(`session token is ${jwt} keep going`), /eyJ/);
+  const nested = redactValue({ note: `auth ${jwt}`, list: [jwt] }).value as {
+    note: string;
+    list: string[];
+  };
+  assert.doesNotMatch(nested.note, /eyJ/);
+  assert.doesNotMatch(String(nested.list[0]), /eyJ/);
+  // A dotted, non-JWT value (no eyJ segments) must not be over-redacted.
+  const benign = "path.to.value";
+  assert.equal(redactText(benign), benign);
+});
