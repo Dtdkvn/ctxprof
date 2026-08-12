@@ -32,13 +32,26 @@ Everything runs locally. The proxy has zero runtime dependencies, listens on loo
 
 ## Quick start
 
+The first npm release and the `v0.1.0` GitHub Action tag are not published yet. With Node.js 22 or 24, run the reviewed code from an existing source checkout:
+
+```bash
+npm ci
+npm run build
+node dist/cli.js demo
+node dist/cli.js serve
+```
+
+Open [http://127.0.0.1:8787](http://127.0.0.1:8787). The deterministic demo needs no API key and includes a deliberately bloated `support-v1` plus a lean `support-v2`.
+
+Once the GitHub repository is public, new users can obtain that checkout with `git clone https://github.com/Dtdkvn/ctxprof.git`.
+
+After `ctxprof` is published to npm, the shorter global-install path will be:
+
 ```bash
 npm install --global ctxprof
 ctxprof demo
 ctxprof serve
 ```
-
-Open [http://127.0.0.1:8787](http://127.0.0.1:8787). The deterministic demo needs no API key and includes a deliberately bloated `support-v1` plus a lean `support-v2`.
 
 Want Docker instead? One command builds the image, starts the proxy, and persists captures in a named volume:
 
@@ -163,15 +176,17 @@ ctxprof check
 
 The check exits `1` and explains every violated metric. Explicit config paths and inputs must exist and produce cases, and regression thresholds require a loaded baseline. A cost limit also fails when pricing is unknown; silently treating unknown cost as zero would make the gate unsafe.
 
-### GitHub Action
+### GitHub Action (after the first release tag)
+
+The Action implementation is checked in and tested locally, but the public `v0.1.0` ref does not exist yet. Once that reviewed release tag is published, use:
 
 ```yaml
-- uses: yewud/ctxprof@v0.1.0
+- uses: Dtdkvn/ctxprof@v0.1.0
   with:
     config: ctxprof.config.json
 ```
 
-The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Pin an immutable release or full commit SHA. It emits native workflow annotations; see the complete [workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
+The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Before the tag exists, repository CI exercises the Action through `uses: ./`; after the repository is public, external workflows can pin a reviewed full commit SHA. It emits native workflow annotations; see the complete [post-release workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
 
 ## What the profiler counts
 
@@ -283,7 +298,7 @@ npm run smoke
 
 Node 22 and 24 are tested. Runtime code uses only Node built-ins; TypeScript and `tsx` are development dependencies. Docker, GitHub Actions, a JSON Schema, fixtures, and a mock-upstream integration test are included.
 
-Contributions are welcome—especially new import adapters, conservative waste heuristics, and dated pricing updates backed by official provider sources. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome—especially new import adapters, conservative waste heuristics, and dated pricing updates backed by official provider sources. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers preparing the public repository, npm package, and first tag can use the [GitHub launch kit](docs/LAUNCH.md).
 
 ## Honest limitations
 

@@ -63,12 +63,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yewud/ctxprof.git"
+    "url": "git+https://github.com/Dtdkvn/ctxprof.git"
   },
   "bugs": {
-    "url": "https://github.com/yewud/ctxprof/issues"
+    "url": "https://github.com/Dtdkvn/ctxprof/issues"
   },
-  "homepage": "https://github.com/yewud/ctxprof#readme",
+  "homepage": "https://github.com/Dtdkvn/ctxprof#readme",
   "publishConfig": {
     "access": "public",
     "provenance": true

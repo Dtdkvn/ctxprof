@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Pin an immutable reviewed release (or full commit SHA).
-      - uses: yewud/ctxprof@v0.1.0
+      # Post-release example: use only after v0.1.0 exists, or pin a reviewed full commit SHA.
+      - uses: Dtdkvn/ctxprof@v0.1.0
         with:
           config: ctxprof.config.json

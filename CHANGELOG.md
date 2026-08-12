@@ -42,5 +42,5 @@ All notable changes will be documented here. Ctxprof follows [Semantic Versionin
 - Deterministic no-key demo, fixture suite, mock-upstream integration tests, hardened non-root Docker/Compose, and an offline prebuilt Node 24 GitHub Action.
 - Maintained Node.js 22/24 support, complete CLI help and npm tarball assets, SHA-pinned CI, trusted publishing, and verified release provenance.
 
-[Unreleased]: https://github.com/yewud/ctxprof/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/yewud/ctxprof/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Dtdkvn/ctxprof/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Dtdkvn/ctxprof/releases/tag/v0.1.0

@@ -1,0 +1,75 @@
+name: Feature request
+description: Propose a focused improvement to context profiling, imports, proxying, reports, or CI budgets.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem before the implementation. Do not paste real prompts, API keys, tokens, HAR headers, customer data, or proprietary model output.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Product surface
+      options:
+        - Proxy or live dashboard
+        - Import or analyze
+        - Report or prompt-version comparison
+        - CI budget or GitHub Action
+        - Docker or local operations
+        - Programmatic ESM API
+        - Token or pricing semantics
+        - Privacy or redaction controls
+        - Documentation or developer experience
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What job is blocked today, for whom, and how often does it happen?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior and how a user would verify it works.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Synthetic example
+      description: Show a safe command, config, or fixture shape. Replace prompts, tokens, identifiers, and private data.
+      render: text
+  - type: dropdown
+    id: capture_mode
+    attributes:
+      label: Capture-mode impact
+      description: Which privacy mode must the proposal preserve or extend?
+      options:
+        - Both `redacted` and `none`
+        - "`redacted` only"
+        - "`none` only"
+        - No capture-mode impact
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Privacy, compatibility, and failure boundaries
+      description: Note provider/proxy behavior, import formats, CI budget semantics, storage growth, or data exposure that must not regress.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission check
+      options:
+        - label: I used only synthetic examples and removed real prompts, credentials, tokens, headers, and private data.
+          required: true
+        - label: I checked the README, roadmap, and existing issues for the same request.
+          required: true

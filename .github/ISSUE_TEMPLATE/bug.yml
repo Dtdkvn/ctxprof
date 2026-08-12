@@ -1,0 +1,98 @@
+name: Bug report
+description: Report a reproducible Ctxprof failure using sanitized or synthetic data.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Ctxprof. Do not paste real prompts, API keys, bearer tokens, cookies, HAR headers, customer data, or private model output. Use the smallest synthetic fixture that preserves the failure.
+
+        Security vulnerabilities belong in a [private security advisory](https://github.com/Dtdkvn/ctxprof/security/advisories/new), not a public issue.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      description: Where did the failure occur?
+      options:
+        - Proxy or live dashboard
+        - Import or analyze (JSON, JSONL, Batch, or HAR)
+        - Report or compare
+        - CI budget (`ctxprof check`)
+        - GitHub Action
+        - Docker or Compose
+        - Programmatic ESM API
+        - Other CLI behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: capture_mode
+    attributes:
+      label: Capture mode
+      description: Select the active capture policy, or not applicable if no capture was created.
+      options:
+        - redacted (default)
+        - none
+        - Not applicable
+        - Unknown
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Ctxprof version or commit
+      description: Paste `ctxprof --version` or the full source commit SHA.
+      placeholder: ctxprof 0.1.0 or 0123456789abcdef...
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime and operating system
+      description: Include `node --version`, platform, architecture, and Docker version when relevant.
+      placeholder: Node 24.0.0, Windows 11 x64; Docker Desktop 4.x
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and endpoint shape
+      description: For proxy/import issues, name the provider or local server and route family. Never include credentials or credential-bearing URLs.
+      placeholder: OpenAI-compatible local server, /v1/responses
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide exact commands and a sanitized or synthetic input small enough for maintainers to run.
+      placeholder: |
+        1. Create `repro.json` containing only synthetic values...
+        2. Run `ctxprof analyze repro.json --json`...
+        3. Observe...
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should Ctxprof have returned, stored, forwarded, or rejected?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Paste sanitized output or logs. Remove prompts, tokens, credentials, personal paths, request IDs, and customer data.
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data-safety check
+      options:
+        - label: I replaced all real prompts, model output, credentials, headers, identifiers, and private data with synthetic values.
+          required: true
+        - label: I confirmed this report is not a security vulnerability that needs private disclosure.
+          required: true
