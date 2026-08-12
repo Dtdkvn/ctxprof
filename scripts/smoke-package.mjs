@@ -52,6 +52,21 @@ try {
     consumer,
   );
   assert.equal(imported.trim(), "2");
+  const dynamicImport = run(
+    process.execPath,
+    ["--input-type=commonjs", "-e", "import('ctxprof').then(({ estimateTokens }) => console.log(estimateTokens('hello')))"],
+    consumer,
+  );
+  assert.equal(dynamicImport.trim(), "2");
+  run(
+    process.execPath,
+    [
+      "--input-type=commonjs",
+      "-e",
+      "try { require('ctxprof'); throw new Error('static require unexpectedly succeeded'); } catch (error) { if (!['ERR_PACKAGE_PATH_NOT_EXPORTED', 'ERR_REQUIRE_ESM'].includes(error.code)) throw error; }",
+    ],
+    consumer,
+  );
   process.stdout.write(`Packed install smoke passed (${manifest.entryCount} files).\n`);
 } finally {
   await rm(directory, { recursive: true, force: true });

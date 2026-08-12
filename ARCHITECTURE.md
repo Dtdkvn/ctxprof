@@ -40,6 +40,8 @@ Forwarding is the latency-sensitive path. The client receives upstream bytes bef
 | `src/ui/dashboard.ts` | Self-contained accessible treemap, component details, warnings, A/B view |
 | `src/cli.ts` | Command routing, text/JSON output, lifecycle, GitHub annotations |
 
+The published library is ESM-only and supports maintained Node.js 22 and 24 releases. Its export map intentionally exposes an `import` condition but no `require` condition; CommonJS callers can use dynamic `import()`.
+
 ## Trust boundaries
 
 ```mermaid

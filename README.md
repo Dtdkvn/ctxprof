@@ -48,6 +48,16 @@ docker compose up --build
 
 The Compose port is published to `127.0.0.1` only.
 
+### Runtime and module format
+
+Ctxprof supports maintained Node.js 22 and 24 releases. Its CLI works after a global or local install; the programmatic API is ESM-only:
+
+```js
+import { analyzeExchange, estimateTokens } from "ctxprof";
+```
+
+Static CommonJS `require("ctxprof")` is intentionally unsupported. From a CommonJS application, use `await import("ctxprof")` or migrate the caller to ESM.
+
 ## Put it in front of an OpenAI-compatible app
 
 Start the proxy:
