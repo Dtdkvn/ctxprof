@@ -10,8 +10,15 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{12,}\b/g,
   /\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{16,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
+  // Slack tokens use stable, high-signal prefixes. The surrounding guards keep
+  // documentation fragments and substrings inside larger identifiers intact.
+  /(?<![A-Za-z0-9_-])(?:xox[a-z]|xapp)-(?:[A-Za-z0-9]{1,128}-){1,4}[A-Za-z0-9]{8,256}(?![A-Za-z0-9_-])/g,
+  // Google API keys are `AIza` followed by exactly 35 URL-safe characters.
+  /(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/g,
   /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
 ];
+
+const BASIC_AUTHORIZATION = /\bBasic[ \t]+([A-Za-z0-9+/]{4,8192}={0,2})(?![A-Za-z0-9+/=])/gi;
 
 export interface RedactionOptions {
   maxStringChars?: number;
@@ -67,6 +74,7 @@ function visit(
 function redactString(value: string, options: RedactionOptions, state: RedactionState): string {
   let result = value;
   for (const pattern of SECRET_PATTERNS) result = result.replace(pattern, "[REDACTED]");
+  result = redactBasicAuthorization(result);
   if (options.redactEmails) {
     result = result.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
   }
@@ -76,6 +84,20 @@ function redactString(value: string, options: RedactionOptions, state: Redaction
     result = `${result.slice(0, max)}…[TRUNCATED ${result.length - max} chars]`;
   }
   return result;
+}
+
+function redactBasicAuthorization(value: string): string {
+  return value.replace(BASIC_AUTHORIZATION, (match, encoded: string) => {
+    // HTTP Basic credentials are base64(user ":" password). Checking both a
+    // canonical round-trip and the mandatory colon avoids treating ordinary
+    // phrases such as "Basic authentication" as credentials.
+    const normalized = encoded.replace(/=+$/, "");
+    if (normalized.length % 4 === 1) return match;
+    const decoded = Buffer.from(encoded, "base64");
+    if (!decoded.includes(0x3a)) return match;
+    if (decoded.toString("base64").replace(/=+$/, "") !== normalized) return match;
+    return "[REDACTED]";
+  });
 }
 
 function isSensitiveKey(key: string): boolean {

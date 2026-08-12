@@ -67,3 +67,37 @@ test("redacts a credential that appears as a property name", () => {
   const kept = redactValue({ model: { temperature: 0.2 } }).value as Record<string, unknown>;
   assert.deepEqual(kept, { model: { temperature: 0.2 } });
 });
+
+test("redacts Slack, Google API, and HTTP Basic credentials without broad matches", () => {
+  const slackBot = "xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwxyz";
+  const slackUser = "xoxp-123456789012-123456789012-abcdefghijklmnopqrstuvwxyz";
+  const slackApp = "xapp-1-ABCDEFGHIJKLMNOPQRSTUVWXYZ-1234567890";
+  const googleApiKey = `AIza${"A".repeat(35)}`;
+  const basic = Buffer.from("synthetic-user:synthetic-password").toString("base64");
+
+  const text = redactText(
+    `bot=${slackBot} user=${slackUser} app=${slackApp} google=${googleApiKey} Authorization: Basic ${basic}`,
+  );
+  for (const credential of [slackBot, slackUser, slackApp, googleApiKey, basic]) {
+    assert.ok(!text.includes(credential), `${credential.slice(0, 8)} credential must be redacted`);
+  }
+
+  const propertyNames = JSON.stringify(redactValue({
+    [slackBot]: 1,
+    [googleApiKey]: 2,
+    [`Basic ${basic}`]: 3,
+  }).value);
+  for (const credential of [slackBot, googleApiKey, basic]) {
+    assert.ok(!propertyNames.includes(credential), `${credential.slice(0, 8)} property name must be redacted`);
+  }
+
+  for (const benign of [
+    "xoxb-short-example",
+    `prefix${slackBot}`,
+    `${googleApiKey}suffix`,
+    "Basic authentication uses a user name and password.",
+    "Basic Zm9v",
+  ]) {
+    assert.equal(redactText(benign), benign);
+  }
+});
