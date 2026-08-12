@@ -18,6 +18,7 @@ All notable changes will be documented here. Ctxprof follows [Semantic Versionin
 - Redacted credentials that appear as a JSON property name. Only values were scanned before, so a payload keyed by an API key or a JWT persisted that key verbatim in the local store.
 - Redacted inline Slack, Google API, and validated HTTP Basic credentials, including minimal valid Basic credentials, without matching documented benign boundary cases.
 - Redacted AWS temporary access keys, credential-bearing URLs, signed query parameters, bounded oversized credentials, and canonical JWTs with empty payloads; secret-like key matching now understands path/camel-case segments without erasing descriptive metadata.
+- Ensured production image layers never contain declarations or source maps, with an OCI-layer regression check rather than relying only on the final container filesystem.
 
 ### Roadmap
 

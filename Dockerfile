@@ -11,7 +11,9 @@ RUN --mount=type=secret,id=ctxprof_ca,required=false \
 COPY tsconfig.json tsconfig.build.json ./
 COPY scripts/postbuild.mjs ./scripts/postbuild.mjs
 COPY src ./src
-RUN npm run build
+RUN npm run build \
+    && cp -a /app/dist /app/runtime-dist \
+    && find /app/runtime-dist -type f \( -name '*.map' -o -name '*.d.ts' \) -delete
 
 FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS runtime
 ENV NODE_ENV=production \
@@ -20,9 +22,8 @@ ENV NODE_ENV=production \
     CTXPROF_PORT=8787
 WORKDIR /app
 COPY --from=build --chown=node:node /app/package.json ./package.json
-COPY --from=build --chown=node:node /app/dist ./dist
-RUN find /app/dist -type f \( -name '*.map' -o -name '*.d.ts' \) -delete \
-    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+COPY --from=build --chown=node:node /app/runtime-dist ./dist
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn* \
     && mkdir /data \
     && chown node:node /data

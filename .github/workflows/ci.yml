@@ -68,6 +68,7 @@ jobs:
             '! command -v npm && ! command -v npx && ! command -v corepack && ! command -v yarn && ! command -v yarnpkg'
           test "$(docker exec "$container" sh -c \
             'find /app/dist -type f \( -name "*.map" -o -name "*.d.ts" \) | wc -l')" = "0"
+          node scripts/check-image-layers.mjs ctxprof:test
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8787/healthz >/dev/null; then break; fi
             if [ "$attempt" = 30 ]; then docker logs "$container"; exit 1; fi
