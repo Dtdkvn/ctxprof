@@ -77,7 +77,7 @@ The source, npm package, provenance, `v0.1.0` Action tag, and GitHub release are
 
 - [x] Create and push `v0.1.0` only from the reviewed `main` commit; the release workflow requires the tag to match `package.json` exactly.
 - [x] Wait for the release workflow to verify the tarball, publish with provenance, and create the GitHub release.
-- [ ] Immediately register npm trusted publishing for repository `Dtdkvn/ctxprof`, workflow `release.yml`, environment `release`, and `npm publish`; then delete `NPM_TOKEN`, revoke the bootstrap token, and remove the workflow's temporary token fallback.
+- [ ] Register npm trusted publishing for repository `Dtdkvn/ctxprof`, workflow `release.yml`, environment `release`, and `npm publish` after the npm account completes its required 2FA setup. The bootstrap `NPM_TOKEN` and workflow fallback have already been removed, so new-version publication fails closed until this connection exists.
 - [x] On Node 24, verify `npm view ctxprof@0.1.0`, install the package in a clean temporary project, and run the packaged CLI plus ESM import smoke.
 - [ ] In a separate test repository, pin `Dtdkvn/ctxprof` to the reviewed full tag commit SHA and verify both passing and deliberately failing budget annotations.
 - [x] Replace the README's pre-release language with current npm and Action instructions only after both artifacts resolve publicly.
