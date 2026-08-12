@@ -43,6 +43,7 @@
     "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run check:action",
     "dev": "node --enable-source-maps --import=tsx src/cli.ts",
     "demo": "npm run build && node dist/cli.js demo",
+    "benchmark:store": "npm run build && node scripts/benchmark-store.mjs",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "smoke:action": "node scripts/smoke-action.mjs",
     "smoke:package": "node scripts/smoke-package.mjs",

@@ -78,7 +78,7 @@ Component allocation preserves the provider input total: each estimated componen
 
 The store is newline-delimited JSON rather than SQLite because the expected local workload is append-heavy, single-process, and easy to inspect or delete. Every append is serialized through an in-process promise queue. Component, warning, and serialized-run ceilings prevent small inputs from amplifying into unbounded dashboard records. Readers tolerate only an invalid final line from an interrupted append; corruption in any earlier record fails with its file and line number.
 
-JSONL is not intended for multiple writers, large shared teams, retention policies, or distributed tracing. A future store interface can add SQLite without changing `ProfileRun`.
+JSONL is not intended for multiple writers, large shared teams, retention policies, or distributed tracing. The validated v0.1 operating bracket is up to 3,000 captures or approximately 25 MiB. `npm run benchmark:store` provides a repeatable full-read baseline; a future store interface can add SQLite without changing `ProfileRun` when representative measurements justify it.
 
 ## Token and cost semantics
 

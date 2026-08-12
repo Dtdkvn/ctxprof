@@ -290,7 +290,7 @@ Contributions are welcome—especially new import adapters, conservative waste h
 - Component token counts are approximate without provider-specific tokenizer packages.
 - Streaming output usage is exact only when the upstream includes a usage event; otherwise output cost can be understated.
 - Image/audio tokenization, cache pricing, tool-call fees, and complex long-context pricing are not modeled.
-- JSONL is intentionally simple and single-process; it is not a multi-node trace database.
+- JSONL is intentionally simple and single-process; the validated v0.1 target is up to 3,000 captures or about 25 MiB, not a multi-node trace database. Run the reproducible [storage benchmark](docs/BENCHMARKING.md) before proposing a different default.
 - The dashboard is local and unauthenticated. Remote bind requires an explicit safety override.
 - Redaction reduces accidental secret storage but is not a substitute for data classification or encryption at rest.
 
