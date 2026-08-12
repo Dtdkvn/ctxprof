@@ -4,9 +4,19 @@ All notable changes will be documented here. Ctxprof follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added
+
+- A reproducible 3,000-run JSONL storage benchmark with an explicit, measurement-driven decision boundary for evaluating a future SQLite adapter.
+
+### Changed
+
+- Documented the supported Node.js 22/24 and ESM-only library contract, including dynamic `import()` guidance for CommonJS callers.
+- Production container images now omit TypeScript declarations and source maps while npm packages continue to ship both.
+
 ### Fixed
 
 - Redacted credentials that appear as a JSON property name. Only values were scanned before, so a payload keyed by an API key or a JWT persisted that key verbatim in the local store.
+- Redacted inline Slack, Google API, and validated HTTP Basic credentials, including minimal valid Basic credentials, without matching documented benign boundary cases.
 
 ### Roadmap
 
