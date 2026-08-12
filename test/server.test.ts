@@ -65,6 +65,75 @@ test("passes through an OpenAI-compatible response and records it safely", async
   assert.match(await dashboard.text(), /Context treemap/);
 });
 
+test("keeps unusual request paths on the configured upstream authority", async (context) => {
+  const primaryPaths: string[] = [];
+  const primary = createServer((request, response) => {
+    primaryPaths.push(request.url ?? "");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      model: "gpt-5.6-luna",
+      choices: [],
+      usage: { prompt_tokens: 2, completion_tokens: 1 },
+    }));
+  });
+  let secondRequests = 0;
+  const second = createServer((_request, response) => {
+    secondRequests += 1;
+    response.writeHead(418, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "wrong upstream" }));
+  });
+  await Promise.all([
+    new Promise<void>((resolve) => primary.listen(0, "127.0.0.1", resolve)),
+    new Promise<void>((resolve) => second.listen(0, "127.0.0.1", resolve)),
+  ]);
+  context.after(() => Promise.all([
+    new Promise<void>((resolve) => primary.close(() => resolve())),
+    new Promise<void>((resolve) => second.close(() => resolve())),
+  ]));
+  const primaryAddress = primary.address();
+  const secondAddress = second.address();
+  assert.ok(primaryAddress && typeof primaryAddress === "object");
+  assert.ok(secondAddress && typeof secondAddress === "object");
+
+  const directory = await mkdtemp(path.join(tmpdir(), "ctxprof-upstream-authority-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  let captureCount = 0;
+  let capturedResolve!: () => void;
+  const captured = new Promise<void>((resolve) => { capturedResolve = resolve; });
+  const proxy = await startServer({
+    port: 0,
+    upstream: `http://127.0.0.1:${primaryAddress.port}/gateway/v1`,
+    store: new RunStore(directory),
+    captureMode: "none",
+    quiet: true,
+    onRun: () => {
+      captureCount += 1;
+      if (captureCount === 2) capturedResolve();
+    },
+  });
+  context.after(() => proxy.close());
+
+  const unusualPaths = [
+    `/v1///127.0.0.1:${secondAddress.port}/chat?form=slashes`,
+    `/v1/\\\\127.0.0.1:${secondAddress.port}\\chat?form=backslashes`,
+  ];
+  for (const requestPath of unusualPaths) {
+    const response = await rawPathRequest(proxy.port, requestPath, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: Buffer.from(JSON.stringify({ model: "gpt-5.6-luna", messages: [] })),
+    });
+    assert.equal(response.status, 200);
+  }
+  await captured;
+
+  assert.equal(secondRequests, 0, "request path must not replace the configured upstream authority");
+  assert.deepEqual(primaryPaths, [
+    `/gateway/v1///127.0.0.1:${secondAddress.port}/chat?form=slashes`,
+    `/gateway/v1///127.0.0.1:${secondAddress.port}/chat?form=backslashes`,
+  ]);
+});
+
 test("proxy capture bounds adversarial component amplification before persistence", async (context) => {
   const upstream = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -798,6 +867,29 @@ interface RawResponse {
 function rawRequest(url: string, options: RawRequestOptions = {}): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const request = httpRequest(url, {
+      method: options.method ?? "GET",
+      ...(options.headers ? { headers: options.headers } : {}),
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.once("end", () => resolve({
+        status: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks),
+      }));
+      response.once("error", reject);
+    });
+    request.once("error", reject);
+    request.end(options.body);
+  });
+}
+
+function rawPathRequest(port: number, requestPath: string, options: RawRequestOptions = {}): Promise<RawResponse> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port,
+      path: requestPath,
       method: options.method ?? "GET",
       ...(options.headers ? { headers: options.headers } : {}),
     }, (response) => {

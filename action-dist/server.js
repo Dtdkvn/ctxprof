@@ -765,7 +765,12 @@ function makeUpstreamUrl(upstream, requestUrl) {
     if ((basePath === "/v1" || basePath.endsWith("/v1")) && requestPath.startsWith("v1/")) {
         requestPath = requestPath.slice(3);
     }
-    const target = new URL(requestPath, base);
+    // Assign the path on the already-parsed upstream URL instead of resolving a
+    // relative URL. A request path beginning with `//` (including backslashes
+    // normalized by WHATWG URL parsing) is otherwise interpreted as a new
+    // authority and can silently replace the configured upstream host.
+    const target = new URL(base);
+    target.pathname = `${basePath}/${requestPath}`;
     target.search = requestUrl.search;
     return target;
 }
