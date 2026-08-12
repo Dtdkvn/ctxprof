@@ -18,7 +18,7 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
 ];
 
-const BASIC_AUTHORIZATION = /\bBasic[ \t]+([A-Za-z0-9+/]{4,8192}={0,2})(?![A-Za-z0-9+/=])/gi;
+const BASIC_AUTHORIZATION = /\bBasic[ \t]+([A-Za-z0-9+/]{2,8192}={0,2})(?![A-Za-z0-9+/=])/gi;
 
 export interface RedactionOptions {
   maxStringChars?: number;

@@ -74,11 +74,13 @@ test("redacts Slack, Google API, and HTTP Basic credentials without broad matche
   const slackApp = "xapp-1-ABCDEFGHIJKLMNOPQRSTUVWXYZ-1234567890";
   const googleApiKey = `AIza${"A".repeat(35)}`;
   const basic = Buffer.from("synthetic-user:synthetic-password").toString("base64");
+  const minimalBasic = Buffer.from(":").toString("base64");
 
   const text = redactText(
-    `bot=${slackBot} user=${slackUser} app=${slackApp} google=${googleApiKey} Authorization: Basic ${basic}`,
+    `bot=${slackBot} user=${slackUser} app=${slackApp} google=${googleApiKey} ` +
+    `Authorization: Basic ${basic} proxy-authorization: bAsIc\t${minimalBasic}`,
   );
-  for (const credential of [slackBot, slackUser, slackApp, googleApiKey, basic]) {
+  for (const credential of [slackBot, slackUser, slackApp, googleApiKey, basic, minimalBasic]) {
     assert.ok(!text.includes(credential), `${credential.slice(0, 8)} credential must be redacted`);
   }
 

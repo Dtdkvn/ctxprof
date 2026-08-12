@@ -16,7 +16,7 @@ const SECRET_PATTERNS = [
     /(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/g,
     /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
 ];
-const BASIC_AUTHORIZATION = /\bBasic[ \t]+([A-Za-z0-9+/]{4,8192}={0,2})(?![A-Za-z0-9+/=])/gi;
+const BASIC_AUTHORIZATION = /\bBasic[ \t]+([A-Za-z0-9+/]{2,8192}={0,2})(?![A-Za-z0-9+/=])/gi;
 export function redactValue(value, options = {}) {
     const state = { truncated: false };
     const redacted = visit(value, options, state, 0, "");
