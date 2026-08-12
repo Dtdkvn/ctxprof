@@ -10,7 +10,11 @@ export function renderDashboard(
   runs: readonly ProfileRun[],
   options: DashboardOptions = {},
 ): string {
-  const data = JSON.stringify(runs).replace(/</g, "\\u003c").replace(/-->/g, "--\\u003e");
+  // Escaping every opening angle bracket prevents serialized profile data from
+  // creating HTML tags, script end tags, or comment delimiters in this inline
+  // JSON payload. A second tag-shaped replacement is unnecessary and can be
+  // mistaken for an incomplete HTML sanitizer by static analyzers.
+  const data = JSON.stringify(runs).replace(/</g, "\\u003c");
   const mode = options.mode ?? "static";
   const live = mode !== "static";
   const title = escapeHtml(options.title ?? "Ctxprof report");
