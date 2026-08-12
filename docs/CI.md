@@ -23,7 +23,7 @@ Paths in the config are resolved relative to the config file. When the GitHub Ac
 
 ## 3. Establish the baseline
 
-Until the first npm release is published, run these commands from a built source checkout as `node dist/cli.js check ...`. After publication, the package-based commands are:
+Install `ctxprof` from npm, then establish the reviewed baseline:
 
 ```bash
 npx ctxprof check --update-baseline
@@ -43,7 +43,7 @@ Exit code `0` means every case passed. Exit code `1` means at least one hard lim
 
 Baseline case IDs use the friendly basename when it is unique. If two inputs share a basename, Ctxprof uses a normalized config-directory-relative path (for example `prompts/a/case.json`) so reordering inputs cannot swap baseline identities; duplicate exact inputs are rejected.
 
-For GitHub-hosted workflows, the Node 24 JavaScript Action in [examples/github-actions/context-budget.yml](../examples/github-actions/context-budget.yml) shows the post-release tag form. The checked-in Action is already exercised by this repository through `uses: ./`; before the documented tag exists, external consumers can pin a reviewed 40-character commit SHA. It runs its checked-in JavaScript without downloading dependencies, compiling, or depending on the caller's `node` executable. `--github` emits `::error` annotations if you invoke the CLI directly.
+For GitHub-hosted workflows, the Node 24 JavaScript Action in [examples/github-actions/context-budget.yml](../examples/github-actions/context-budget.yml) uses the live `v0.1.0` tag. Consumers that require an immutable reference can pin the tag's reviewed 40-character commit SHA. It runs its checked-in JavaScript without downloading dependencies, compiling, or depending on the caller's `node` executable. `--github` emits `::error` annotations if you invoke the CLI directly.
 
 ## Useful policies
 

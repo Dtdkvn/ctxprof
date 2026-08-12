@@ -32,7 +32,17 @@ Everything runs locally. The proxy has zero runtime dependencies, listens on loo
 
 ## Quick start
 
-The source repository is public at <https://github.com/Dtdkvn/ctxprof>. The first npm release and the `v0.1.0` GitHub Action tag are not published yet. With Node.js 22 or 24:
+Ctxprof `0.1.0` is available from [npm](https://www.npmjs.com/package/ctxprof) and [GitHub Releases](https://github.com/Dtdkvn/ctxprof/releases/tag/v0.1.0). With Node.js 22 or 24:
+
+```bash
+npm install --global ctxprof
+ctxprof demo
+ctxprof serve
+```
+
+Open [http://127.0.0.1:8787](http://127.0.0.1:8787). The deterministic demo needs no API key and includes a deliberately bloated `support-v1` plus a lean `support-v2`.
+
+To run the reviewed source directly instead:
 
 ```bash
 git clone https://github.com/Dtdkvn/ctxprof.git
@@ -41,16 +51,6 @@ npm ci
 npm run build
 node dist/cli.js demo
 node dist/cli.js serve
-```
-
-Open [http://127.0.0.1:8787](http://127.0.0.1:8787). The deterministic demo needs no API key and includes a deliberately bloated `support-v1` plus a lean `support-v2`.
-
-After `ctxprof` is published to npm, the shorter global-install path will be:
-
-```bash
-npm install --global ctxprof
-ctxprof demo
-ctxprof serve
 ```
 
 Want Docker instead? One command builds the image, starts the proxy, and persists captures in a named volume:
@@ -176,9 +176,9 @@ ctxprof check
 
 The check exits `1` and explains every violated metric. Explicit config paths and inputs must exist and produce cases, and regression thresholds require a loaded baseline. A cost limit also fails when pricing is unknown; silently treating unknown cost as zero would make the gate unsafe.
 
-### GitHub Action (after the first release tag)
+### GitHub Action
 
-The Action implementation is checked into the public repository and tested in CI, but the `v0.1.0` ref does not exist yet. Until the reviewed release tag is published, external workflows should pin a reviewed 40-character commit SHA. After publication, the version-tag form will be:
+The reviewed `v0.1.0` Action is live. Pin the version tag for convenience or the tag's full commit SHA for an immutable supply-chain reference:
 
 ```yaml
 - uses: Dtdkvn/ctxprof@v0.1.0
@@ -186,7 +186,7 @@ The Action implementation is checked into the public repository and tested in CI
     config: ctxprof.config.json
 ```
 
-The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Repository CI exercises it through `uses: ./`. Action file paths are confined to the canonical repository workspace; use relative `config` and `pricing` inputs. It emits native workflow annotations; see the complete [post-release workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
+The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Repository CI exercises it through `uses: ./`. Action file paths are confined to the canonical repository workspace; use relative `config` and `pricing` inputs. It emits native workflow annotations; see the complete [workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
 
 ## What the profiler counts
 
@@ -298,7 +298,7 @@ npm run smoke
 
 Node 22 and 24 are tested. Runtime code uses only Node built-ins; TypeScript and `tsx` are development dependencies. Docker, GitHub Actions, a JSON Schema, fixtures, and a mock-upstream integration test are included.
 
-Contributions are welcome—especially new import adapters, conservative waste heuristics, and dated pricing updates backed by official provider sources. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers preparing the public repository, npm package, and first tag can use the [GitHub launch kit](docs/LAUNCH.md).
+Contributions are welcome—especially new import adapters, conservative waste heuristics, and dated pricing updates backed by official provider sources. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers can reuse the [launch and release checklist](docs/LAUNCH.md) for future versions.
 
 ## Honest limitations
 
