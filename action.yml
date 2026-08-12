@@ -6,11 +6,11 @@ branding:
   color: purple
 inputs:
   config:
-    description: Path to ctxprof.config.json in the calling repository.
+    description: Relative path to ctxprof.config.json inside the calling repository workspace.
     required: false
     default: ctxprof.config.json
   pricing:
-    description: Optional exact provider/model pricing catalog.
+    description: Optional relative path to an exact pricing catalog inside the repository workspace.
     required: false
     default: ""
 runs:

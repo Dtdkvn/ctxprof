@@ -5,15 +5,16 @@ import { isIP } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { evaluateBudget, makeBaseline, metricsForRuns, readBaseline, readBudgetConfig, writeBaseline } from "./budget.js";
+import { evaluateBudget, makeBaseline, metricsForRuns, parseBaseline, parseBudgetConfig, readBaseline, readBudgetConfig, writeBaseline, } from "./budget.js";
 import { compareVersions, versionsIn } from "./compare.js";
 import { createDemoRuns } from "./demo.js";
 import { importFile } from "./importer.js";
-import { BUILTIN_PRICING, loadPricingFile } from "./pricing.js";
+import { BUILTIN_PRICING, loadPricingFile, parsePricingFile } from "./pricing.js";
 import { writeHtmlReport } from "./report.js";
 import { safeError } from "./redaction.js";
 import { startServer } from "./server.js";
 import { RunStore } from "./store.js";
+import { createWorkspaceScope, readWorkspaceFile } from "./workspace.js";
 const VERSION = "0.1.0";
 const MINIMUM_NODE_MAJOR = 22;
 const BOOLEAN_OPTIONS = new Set(["help", "json", "allow-remote", "update-baseline", "github"]);
@@ -106,7 +107,7 @@ const OPTION_HELP = {
     "component-regression": { syntax: "--component-regression <pct>", description: "Allowed growth for every component kind" },
     github: { syntax: "--github", description: "Emit GitHub workflow annotations" },
 };
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), options = {}) {
     if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
         process.stdout.write(`ctxprof ${VERSION}\n`);
         return 0;
@@ -140,7 +141,7 @@ export async function main(argv = process.argv.slice(2)) {
         case "compare":
             return compareCommand(parsed);
         case "check":
-            return checkCommand(parsed);
+            return checkCommand(parsed, options);
         case "demo":
             return demoCommand(parsed);
         case "pricing":
@@ -259,31 +260,55 @@ async function compareCommand(parsed) {
     }
     return 0;
 }
-async function checkCommand(parsed) {
+async function checkCommand(parsed, options) {
+    const actionScope = options.actionWorkspace
+        ? await createWorkspaceScope(options.actionWorkspace)
+        : null;
     const explicitConfig = stringOption(parsed, "config");
-    const configPath = path.resolve(explicitConfig ?? "ctxprof.config.json");
-    const configExists = await exists(configPath);
+    const configInput = explicitConfig ?? "ctxprof.config.json";
+    const configFile = actionScope
+        ? await readWorkspaceFile(actionScope, configInput, actionScope.root, "Budget config")
+        : null;
+    const configPath = configFile?.path ?? path.resolve(configInput);
+    const configExists = configFile ? true : await exists(configPath);
     if (explicitConfig && !configExists) {
         throw new Error(`Budget config not found: ${configPath}`);
     }
-    const config = configExists ? await readBudgetConfig(configPath) : {};
+    const config = configFile
+        ? parseBudgetConfig(configFile.contents)
+        : configExists ? await readBudgetConfig(configPath) : {};
     applyCliBudgetOptions(config, parsed);
     const configDirectory = path.dirname(configPath);
-    const inputs = parsed.positionals.length
-        ? parsed.positionals.map((entry) => path.resolve(entry))
-        : (config.input ?? []).map((entry) => path.resolve(configDirectory, entry));
+    const configuredInputs = parsed.positionals.length ? parsed.positionals : (config.input ?? []);
+    const inputBase = parsed.positionals.length ? (actionScope?.root ?? process.cwd()) : configDirectory;
+    const inputFiles = actionScope
+        ? await Promise.all(configuredInputs.map((entry) => readWorkspaceFile(actionScope, entry, inputBase, "Budget input")))
+        : null;
+    const inputs = inputFiles
+        ? inputFiles.map((file) => file.path)
+        : configuredInputs.map((entry) => path.resolve(inputBase, entry));
     if (inputs.length === 0) {
         throw new Error("No budget inputs. Add input files to ctxprof.config.json or pass them after `ctxprof check`.");
     }
-    const pricing = await loadPricingFile(stringOption(parsed, "pricing"));
-    const imports = await importInputs(inputs, { captureMode: "none", pricing }, configDirectory);
+    const pricingOption = stringOption(parsed, "pricing");
+    const pricingFile = actionScope && pricingOption
+        ? await readWorkspaceFile(actionScope, pricingOption, actionScope.root, "Pricing catalog")
+        : null;
+    const pricing = pricingFile ? parsePricingFile(pricingFile.contents) : await loadPricingFile(pricingOption);
+    const imports = await importInputs(inputs, { captureMode: "none", pricing }, configDirectory, inputFiles ?? []);
     const cases = metricsForRuns(imports);
     if (Object.keys(cases).length === 0) {
         throw new Error("No context-budget cases were produced. Every check input must contain at least one supported record.");
     }
     const baselineOption = stringOption(parsed, "baseline") ?? config.baseline;
-    const baselinePath = baselineOption ? path.resolve(configDirectory, baselineOption) : null;
     const update = hasFlag(parsed, "update-baseline");
+    if (actionScope && update) {
+        throw new Error("--update-baseline is not available in the GitHub Action. Update and review baselines locally.");
+    }
+    const baselineFile = actionScope && baselineOption
+        ? await readWorkspaceFile(actionScope, baselineOption, configDirectory, "Budget baseline")
+        : null;
+    const baselinePath = baselineFile?.path ?? (baselineOption ? path.resolve(configDirectory, baselineOption) : null);
     const hasLimits = hasBudgetLimits(config);
     const hasRegressions = hasBudgetRegressions(config);
     if (!hasLimits && !hasRegressions && !update) {
@@ -292,7 +317,9 @@ async function checkCommand(parsed) {
     if (hasRegressions && !baselinePath) {
         throw new Error("Regression limits require a baseline path in config or --baseline <path>.");
     }
-    const baseline = baselinePath ? await readBaseline(baselinePath) : null;
+    const baseline = baselineFile
+        ? parseBaseline(baselineFile.contents)
+        : baselinePath ? await readBaseline(baselinePath) : null;
     if (baselinePath && !baseline && !update && (hasRegressions || stringOption(parsed, "baseline") !== undefined)) {
         throw new Error(`Baseline not found at ${baselinePath}. Run ctxprof check --update-baseline once.`);
     }
@@ -434,7 +461,7 @@ function importOptions(parsed, pricing) {
         ...(model ? { model } : {}),
     };
 }
-async function importInputs(files, options, identityRoot = process.cwd()) {
+async function importInputs(files, options, identityRoot = process.cwd(), snapshots = []) {
     const absoluteFiles = files.map((file) => path.resolve(file));
     const canonicalKeys = absoluteFiles.map((file) => process.platform === "win32" ? file.toLowerCase() : file);
     if (new Set(canonicalKeys).size !== canonicalKeys.length) {
@@ -445,7 +472,8 @@ async function importInputs(files, options, identityRoot = process.cwd()) {
         const key = path.basename(file).toLowerCase();
         basenameCounts.set(key, (basenameCounts.get(key) ?? 0) + 1);
     }
-    const groups = await Promise.all(absoluteFiles.map((file) => importFile(file, options)));
+    const snapshotByPath = new Map(snapshots.map((snapshot) => [snapshot.path, snapshot]));
+    const groups = await Promise.all(absoluteFiles.map((file) => importFile(file, options, snapshotByPath.get(file))));
     return groups.flatMap((runs, fileIndex) => {
         const file = absoluteFiles[fileIndex];
         if ((basenameCounts.get(path.basename(file).toLowerCase()) ?? 0) === 1)

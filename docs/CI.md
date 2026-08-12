@@ -19,7 +19,7 @@ Copy the root [ctxprof.config.json](../ctxprof.config.json) and adjust:
 - `components` use `system`, `developer`, `tools`, `message`, `tool_result`, and `other`;
 - a configured cost check fails when pricing is unknown.
 
-Paths in the config are resolved relative to the config file. The JSON Schema at [ctxprof-config.schema.json](ctxprof-config.schema.json) enables editor validation.
+Paths in the config are resolved relative to the config file. When the GitHub Action runs, its config and optional pricing inputs must be relative paths, and every config, pricing, input, and baseline file must resolve to a regular file inside the canonical `GITHUB_WORKSPACE`; parent, absolute, and symbolic-link escapes fail closed. The standalone CLI intentionally keeps operator-selected paths unrestricted. The JSON Schema at [ctxprof-config.schema.json](ctxprof-config.schema.json) enables editor validation.
 
 ## 3. Establish the baseline
 

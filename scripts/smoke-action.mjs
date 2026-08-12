@@ -12,7 +12,8 @@ const result = spawnSync(
     encoding: "utf8",
     env: {
       ...process.env,
-      INPUT_CONFIG: path.resolve("ctxprof.config.json"),
+      GITHUB_WORKSPACE: process.cwd(),
+      INPUT_CONFIG: "ctxprof.config.json",
       INPUT_PRICING: "",
       NODE_ENV: "production",
     },

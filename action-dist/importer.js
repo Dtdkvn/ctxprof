@@ -6,10 +6,10 @@ import { findPricing } from "./pricing.js";
 import { contentHash, redactText, redactValue } from "./redaction.js";
 import { isProfileRun } from "./store.js";
 import { stableStringify } from "./tokenizer.js";
-export async function importFile(filePath, options = {}) {
+export async function importFile(filePath, options = {}, snapshot) {
     const absolute = path.resolve(filePath);
-    const contents = await readFile(absolute, "utf8");
-    const modified = (await stat(absolute)).mtime.toISOString();
+    const contents = snapshot?.contents ?? await readFile(absolute, "utf8");
+    const modified = snapshot?.modifiedAt ?? (await stat(absolute)).mtime.toISOString();
     const extension = path.extname(absolute).toLowerCase();
     const values = parseDocument(contents, extension);
     const exchanges = extension === ".har"

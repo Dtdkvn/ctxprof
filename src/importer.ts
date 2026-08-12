@@ -34,10 +34,19 @@ export interface NamedRun {
   run: ProfileRun;
 }
 
-export async function importFile(filePath: string, options: ImportOptions = {}): Promise<NamedRun[]> {
+export interface ImportFileSnapshot {
+  contents: string;
+  modifiedAt: string;
+}
+
+export async function importFile(
+  filePath: string,
+  options: ImportOptions = {},
+  snapshot?: ImportFileSnapshot,
+): Promise<NamedRun[]> {
   const absolute = path.resolve(filePath);
-  const contents = await readFile(absolute, "utf8");
-  const modified = (await stat(absolute)).mtime.toISOString();
+  const contents = snapshot?.contents ?? await readFile(absolute, "utf8");
+  const modified = snapshot?.modifiedAt ?? (await stat(absolute)).mtime.toISOString();
   const extension = path.extname(absolute).toLowerCase();
   const values = parseDocument(contents, extension);
   const exchanges = extension === ".har"

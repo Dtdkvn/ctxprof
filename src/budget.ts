@@ -112,7 +112,11 @@ export function makeBaseline(cases: Record<string, BudgetMetrics>): BudgetBaseli
 }
 
 export async function readBudgetConfig(filePath: string): Promise<BudgetConfig> {
-  const value: unknown = JSON.parse(await readFile(filePath, "utf8"));
+  return parseBudgetConfig(await readFile(filePath, "utf8"));
+}
+
+export function parseBudgetConfig(contents: string): BudgetConfig {
+  const value: unknown = JSON.parse(contents);
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Budget config must be a JSON object.");
   }
@@ -121,12 +125,15 @@ export async function readBudgetConfig(filePath: string): Promise<BudgetConfig> 
 
 export async function readBaseline(filePath: string): Promise<BudgetBaseline | null> {
   try {
-    const value: unknown = JSON.parse(await readFile(filePath, "utf8"));
-    return validateBaseline(value);
+    return parseBaseline(await readFile(filePath, "utf8"));
   } catch (error) {
     if (isNotFound(error)) return null;
     throw error;
   }
+}
+
+export function parseBaseline(contents: string): BudgetBaseline {
+  return validateBaseline(JSON.parse(contents) as unknown);
 }
 
 function validateBaseline(value: unknown): BudgetBaseline {

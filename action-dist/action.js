@@ -3,12 +3,16 @@ import process from "node:process";
 import { main } from "./cli.js";
 import { safeError } from "./redaction.js";
 export async function runAction(environment = process.env) {
+    const workspace = environment.GITHUB_WORKSPACE?.trim();
+    if (!workspace) {
+        throw new Error("GITHUB_WORKSPACE is required when ctxprof runs as a GitHub Action.");
+    }
     const config = environment.INPUT_CONFIG?.trim() || "ctxprof.config.json";
     const pricing = environment.INPUT_PRICING?.trim();
     const args = ["check", "--config", config, "--github"];
     if (pricing)
         args.push("--pricing", pricing);
-    return main(args);
+    return main(args, { actionWorkspace: workspace });
 }
 runAction().then((code) => {
     process.exitCode = code;

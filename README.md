@@ -186,7 +186,7 @@ The Action implementation is checked into the public repository and tested in CI
     config: ctxprof.config.json
 ```
 
-The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Repository CI exercises it through `uses: ./`. It emits native workflow annotations; see the complete [post-release workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
+The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Repository CI exercises it through `uses: ./`. Action file paths are confined to the canonical repository workspace; use relative `config` and `pricing` inputs. It emits native workflow annotations; see the complete [post-release workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
 
 ## What the profiler counts
 

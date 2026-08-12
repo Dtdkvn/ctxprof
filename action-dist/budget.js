@@ -87,7 +87,10 @@ export function makeBaseline(cases) {
     return { schemaVersion: 1, generatedAt: new Date().toISOString(), cases };
 }
 export async function readBudgetConfig(filePath) {
-    const value = JSON.parse(await readFile(filePath, "utf8"));
+    return parseBudgetConfig(await readFile(filePath, "utf8"));
+}
+export function parseBudgetConfig(contents) {
+    const value = JSON.parse(contents);
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("Budget config must be a JSON object.");
     }
@@ -95,14 +98,16 @@ export async function readBudgetConfig(filePath) {
 }
 export async function readBaseline(filePath) {
     try {
-        const value = JSON.parse(await readFile(filePath, "utf8"));
-        return validateBaseline(value);
+        return parseBaseline(await readFile(filePath, "utf8"));
     }
     catch (error) {
         if (isNotFound(error))
             return null;
         throw error;
     }
+}
+export function parseBaseline(contents) {
+    return validateBaseline(JSON.parse(contents));
 }
 function validateBaseline(value) {
     const root = requireRecord(value, "baseline");

@@ -120,7 +120,10 @@ function isCanonicalSnapshotDate(value) {
 export async function loadPricingFile(filePath) {
     if (!filePath)
         return [];
-    const value = JSON.parse(await readFile(filePath, "utf8"));
+    return parsePricingFile(await readFile(filePath, "utf8"));
+}
+export function parsePricingFile(contents) {
+    const value = JSON.parse(contents);
     if (!Array.isArray(value)) {
         throw new Error("Pricing catalog must be a JSON array.");
     }

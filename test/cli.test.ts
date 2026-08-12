@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import process from "node:process";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { COMMAND_OPTIONS } from "../src/cli.js";
+import { COMMAND_OPTIONS, main } from "../src/cli.js";
 
 test("check help documents every accepted budget flag", () => {
   const result = spawnSync(
@@ -108,6 +108,48 @@ test("check fails closed for missing configs and regression rules without a base
   const missingBaseline = runCli(["check", "--config", configPath], {}, directory);
   assert.equal(missingBaseline.status, 1);
   assert.match(missingBaseline.stderr, /Regression limits require a baseline/);
+});
+
+test("standalone check keeps operator-selected paths unrestricted", async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ctxprof-cli-operator-paths-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const workingDirectory = path.join(root, "working");
+  const operatorDirectory = path.join(root, "operator-files");
+  await Promise.all([
+    mkdir(workingDirectory),
+    mkdir(operatorDirectory),
+  ]);
+  const inputPath = path.join(operatorDirectory, "input.json");
+  const baselinePath = path.join(operatorDirectory, "baseline.json");
+  const pricingPath = path.join(operatorDirectory, "pricing.json");
+  const configPath = path.join(operatorDirectory, "config.json");
+  await Promise.all([
+    writeFile(inputPath, await readFile(path.resolve("test/fixtures/chat-baseline.json"), "utf8")),
+    writeFile(baselinePath, await readFile(path.resolve("test/fixtures/context-baseline.json"), "utf8")),
+    writeFile(pricingPath, "[]\n"),
+    writeFile(configPath, JSON.stringify({
+      input: [inputPath],
+      baseline: baselinePath,
+      limits: { inputTokens: 100_000 },
+    })),
+  ]);
+
+  const result = runCli([
+    "check",
+    "--config", configPath,
+    "--pricing", pricingPath,
+  ], { GITHUB_WORKSPACE: workingDirectory, GITHUB_ACTIONS: "true" }, workingDirectory);
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+  assert.match(result.stdout, /Context budget passed/);
+});
+
+test("Action-scoped checks cannot write a baseline", async () => {
+  await assert.rejects(
+    () => main(["check", "--config", "ctxprof.config.json", "--update-baseline"], {
+      actionWorkspace: process.cwd(),
+    }),
+    /--update-baseline is not available in the GitHub Action/,
+  );
 });
 
 test("report, port, and timeout integer options enforce their command bounds", () => {
