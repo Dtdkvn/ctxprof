@@ -32,9 +32,11 @@ Everything runs locally. The proxy has zero runtime dependencies, listens on loo
 
 ## Quick start
 
-The first npm release and the `v0.1.0` GitHub Action tag are not published yet. With Node.js 22 or 24, run the reviewed code from an existing source checkout:
+The source repository is public at <https://github.com/Dtdkvn/ctxprof>. The first npm release and the `v0.1.0` GitHub Action tag are not published yet. With Node.js 22 or 24:
 
 ```bash
+git clone https://github.com/Dtdkvn/ctxprof.git
+cd ctxprof
 npm ci
 npm run build
 node dist/cli.js demo
@@ -42,8 +44,6 @@ node dist/cli.js serve
 ```
 
 Open [http://127.0.0.1:8787](http://127.0.0.1:8787). The deterministic demo needs no API key and includes a deliberately bloated `support-v1` plus a lean `support-v2`.
-
-Once the GitHub repository is public, new users can obtain that checkout with `git clone https://github.com/Dtdkvn/ctxprof.git`.
 
 After `ctxprof` is published to npm, the shorter global-install path will be:
 
@@ -178,7 +178,7 @@ The check exits `1` and explains every violated metric. Explicit config paths an
 
 ### GitHub Action (after the first release tag)
 
-The Action implementation is checked in and tested locally, but the public `v0.1.0` ref does not exist yet. Once that reviewed release tag is published, use:
+The Action implementation is checked into the public repository and tested in CI, but the `v0.1.0` ref does not exist yet. Until the reviewed release tag is published, external workflows should pin a reviewed 40-character commit SHA. After publication, the version-tag form will be:
 
 ```yaml
 - uses: Dtdkvn/ctxprof@v0.1.0
@@ -186,7 +186,7 @@ The Action implementation is checked in and tested locally, but the public `v0.1
     config: ctxprof.config.json
 ```
 
-The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Before the tag exists, repository CI exercises the Action through `uses: ./`; after the repository is public, external workflows can pin a reviewed full commit SHA. It emits native workflow annotations; see the complete [post-release workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
+The Action ships reviewed JavaScript, uses GitHub's Node 24 Action runtime, and performs no install or build in the caller workflow. Repository CI exercises it through `uses: ./`. It emits native workflow annotations; see the complete [post-release workflow example](examples/github-actions/context-budget.yml) and [CI guide](docs/CI.md).
 
 ## What the profiler counts
 

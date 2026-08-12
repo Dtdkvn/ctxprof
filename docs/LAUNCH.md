@@ -1,6 +1,6 @@
 # Ctxprof launch kit
 
-This file contains copy and checks for the first public release. It does not claim that the repository, npm package, or release tag already exists. The canonical destination is <https://github.com/Dtdkvn/ctxprof>.
+The source repository is public at <https://github.com/Dtdkvn/ctxprof>. This file contains copy and checks for the still-pending npm package and first release tag; it does not claim those artifacts already exist.
 
 ## Repository profile
 
@@ -34,7 +34,7 @@ Privacy is a boundary, not a slogan. Ordinary request and response headers are n
 
 The other half of Ctxprof is change control. Give captures stable prompt-version labels and compare aggregate A-to-B token, cost, component, and warning deltas. Commit a baseline with representative fixtures, define absolute and regression limits, and run `ctxprof check` in CI. A failed budget identifies the cases and components that crossed the line instead of reducing the result to a generic token-count failure.
 
-The GitHub Action is prebuilt JavaScript for the Node 24 Action runtime, so caller workflows do not need an install or compile step. It is already exercised inside the repository through `uses: ./`. External projects should wait for the reviewed `v0.1.0` tag or pin a full reviewed commit SHA once the repository is public. The npm and Action snippets in the README are clearly marked as post-publish paths until those artifacts exist.
+The GitHub Action is prebuilt JavaScript for the Node 24 Action runtime, so caller workflows do not need an install or compile step. It is already exercised inside the repository through `uses: ./`. External projects can pin a full reviewed commit SHA now or wait for the reviewed `v0.1.0` tag. The npm and version-tag snippets in the README remain clearly marked as post-publish paths until those artifacts exist.
 
 Ctxprof intentionally uses a small operational footprint: Node built-ins at runtime, append-only JSONL, and self-contained HTML reports. The release audit benchmark wrote and validated 3,000 deterministic runs totaling 16.46 MiB on Node 22 and 24, with full reads around 15,000 runs per second in that Docker Desktop environment. Those numbers are a reproducibility reference, not a promise for other hardware. The supported v0.1 bracket remains one writer and up to 3,000 captures or roughly 25 MiB; the [benchmark notes](BENCHMARKING.md) define when a SQLite adapter would deserve measurement.
 
@@ -46,7 +46,7 @@ LLM APIs give you a token total, but not a useful answer to “what grew?” Ctx
 
 You can try the deterministic demo from source with no API key. Runtime code has zero third-party dependencies; offline analysis needs no network. The proxy binds to loopback by default, never stores ordinary headers, redacts common secrets, and offers preview-free `--capture none`. Those protections have documented limits, so synthetic fixtures remain the safest starting point.
 
-The npm package and `v0.1.0` Action tag are staged but not published yet. Source instructions are in the README: <https://github.com/Dtdkvn/ctxprof>.
+The source is live at <https://github.com/Dtdkvn/ctxprof>. The npm package and `v0.1.0` Action tag are staged but not published yet.
 
 ## Hacker News title
 
@@ -56,8 +56,8 @@ The npm package and `v0.1.0` Action tag are staged but not published yet. Source
 
 ### Repository and profile
 
-- [ ] Create the public `Dtdkvn/ctxprof` repository; do not advertise the URL before it resolves.
-- [ ] Configure `origin`, push the reviewed `main` history, and confirm the working tree and remote tip match.
+- [x] Publish the public `Dtdkvn/ctxprof` source repository.
+- [x] Publish the reviewed `main` history before starting the package release sequence.
 - [ ] Set the About text above and add the listed topics.
 - [ ] Confirm GitHub renders the logo, dashboard image, Mermaid diagram, license, security policy, contributing guide, and code of conduct.
 - [ ] Enable private vulnerability reporting and review branch protection for required CI checks.
